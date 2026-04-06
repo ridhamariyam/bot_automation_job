@@ -21,7 +21,7 @@ type Job = {
   proof?: string;
 };
 
-const API = "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL as string;
 
 async function apiFetch(path: string) {
   const token = localStorage.getItem("token");
@@ -39,6 +39,7 @@ export default function DashboardPage() {
   const [botRunning, setBotRunning] = useState(false);
   const [botLoading, setBotLoading] = useState(false);
   const [botError, setBotError] = useState("");
+  const [credentialsMissing, setCredentialsMissing] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [botLogs, setBotLogs] = useState<
@@ -78,9 +79,11 @@ export default function DashboardPage() {
     })
       .then((r) => r.ok ? r.json() : null)
       .then((p) => {
+        // Check if credentials are missing for all platforms
         if (!p?.linkedin_email || !p?.linkedin_password) {
-          router.push("/onboarding");
-          return;
+          setCredentialsMissing(true);
+        } else {
+          setCredentialsMissing(false);
         }
         refreshData(u.email);
       })
@@ -169,6 +172,20 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {/* Credentials Missing Banner */}
+        {credentialsMissing && (
+          <div className="bg-amber-50 border-2 border-amber-200 rounded-lg p-4 flex items-start gap-3">
+            <span className="text-2xl">⚠️</span>
+            <div>
+              <h3 className="font-semibold text-amber-900">Platform credentials needed</h3>
+              <p className="text-sm text-amber-800 mt-1">Add your LinkedIn (or other platform) credentials in Settings to start applying to jobs.</p>
+              <Link href="/settings" className="inline-block mt-2 text-sm font-semibold text-amber-700 hover:text-amber-900 underline">
+                Go to Settings →
+              </Link>
+            </div>
+          </div>
+        )}
+
         {/* Status Section */}
         <div className="grid md:grid-cols-2 gap-6">
           {/* Bot Status Card */}
@@ -251,10 +268,10 @@ export default function DashboardPage() {
             </div>
 
             <Link
-              href="/onboarding"
+              href="/settings"
               className="block text-center text-blue-600 hover:text-blue-700 text-sm font-medium mt-6 pt-4 border-t border-gray-200"
             >
-              Update Profile →
+              Edit Profile & Credentials →
             </Link>
           </div>
         </div>
@@ -269,14 +286,18 @@ export default function DashboardPage() {
             <div className="text-center py-12">
               <p className="text-gray-600 mb-2">No applications yet.</p>
               <p className="text-sm text-gray-500 mb-4">
-                Complete your profile setup and start the bot to begin applying.
+                {credentialsMissing 
+                  ? "Add your platform credentials in Settings to start applying." 
+                  : "Click 'Start Applying' above to begin submitting applications."}
               </p>
-              <Link
-                href="/onboarding"
-                className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg transition"
-              >
-                Complete Setup
-              </Link>
+              {credentialsMissing && (
+                <Link
+                  href="/settings"
+                  className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg transition"
+                >
+                  Add Credentials
+                </Link>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -522,6 +543,9 @@ export default function DashboardPage() {
             </li>
             <li>
               • The activity log below shows real-time updates from the bot
+            </li>
+            <li>
+              • If you encounter any issues, please contact support at{" ridhamariyam44@gmail.com or +974 7085 8175"}
             </li>
           </ul>
         </div>

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../lib/useAuth";
 
-const API = "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL as string;
 
 export default function OnboardingPage() {
   useAuth();

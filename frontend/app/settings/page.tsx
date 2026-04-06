@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../lib/useAuth";
 
-const API = "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL as string;
 type Section = "profile" | "platforms" | "defaults" | "cv";
 type VerifyStatus = "idle" | "checking" | "ok" | "fail";
 

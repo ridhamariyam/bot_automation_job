@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: jobrocket-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: jobrocket-db
+          property: connectionString
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        value: ridhamariyaam@gmail.com
+      - key: SMTP_PASS
+        sync: false
+      - key: PADDLE_SANDBOX
+        value: "true"
+      - key: PADDLE_API_KEY
+        sync: false
+      - key: PADDLE_WEBHOOK_SECRET
+        sync: false
+      - key: PADDLE_PRICE_PRO
+        value: pri_01kkvt1e6x9fqss5g8kmeej4pz
+      - key: PADDLE_PRICE_PREMIUM
+        value: pri_01kkvt1en449pt4vgw3mv50ca2
+      - key: FRONTEND_URL
+        value: https://jobrocket.aiviora.online
+
+databases:
+  - name: jobrocket-db
+    databaseName: jobrocket
+    user: jobrocket
+    plan: free

@@ -3,6 +3,8 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useAuth } from "../lib/useAuth";
 
+const API = process.env.NEXT_PUBLIC_API_URL as string;
+
 interface Plan {
   name: string;
   price: number;
@@ -41,12 +43,13 @@ const PLANS: Plan[] = [
     platforms: PLATFORMS_BY_TIER.free,
     features: [
       "5 applications per day",
-      "LinkedIn Easy Apply",
+      "LinkedIn Easy Apply only",
       "Basic job filters",
       "Email notifications",
       "7-day application history",
+      "Forever free — no credit card needed",
     ],
-    description: "Perfect for getting started",
+    description: "Limited usage — get started free",
     cta: "Start Free",
   },
   {
@@ -58,73 +61,94 @@ const PLANS: Plan[] = [
       "50 applications per day",
       "LinkedIn + Indeed + Glassdoor",
       "Advanced job filters",
-      "Priority support",
+      "Limited automation",
       "Application analytics",
       "30-day application history",
-      "Custom job search alerts",
+      "Email support",
     ],
-    description: "For serious job seekers",
+    description: "Core features for serious job seekers",
     cta: "Upgrade to Pro",
     popular: true,
   },
   {
     name: "Premium",
-    price: 999,
-    limit: 200,
+    price: 2999,
+    limit: 1000,
     platforms: PLATFORMS_BY_TIER.premium,
     features: [
-      "200 applications per day",
+      "1000+ applications per day",
       "All 8 job platforms",
+      "Full automation enabled",
       "Advanced filtering & AI matching",
       "24/7 priority support",
       "Advanced analytics & insights",
-      "Unlimited history",
-      "API access",
+      "Unlimited application history",
       "Custom workflows",
     ],
-    description: "Maximum reach & features",
+    description: "Full automation with priority support",
     cta: "Go Premium",
   },
 ];
 
 const FAQ = [
   {
-    q: "Can I cancel anytime?",
-    a: "Yes! Cancel your subscription from your account settings anytime with no penalties or hidden fees.",
+    q: "Is this a subscription or one-time payment?",
+    a: "Pro and Premium are monthly subscriptions. Free is forever free with no card required. Cancel anytime from your account settings.",
   },
   {
     q: "How do daily limits work?",
-    a: "Each tier has a daily application limit that resets at midnight IST. Unused applications don't roll over.",
+    a: "Each tier has a daily application limit that resets at midnight IST. Unused applications don't roll over to the next day.",
   },
   {
     q: "What payment methods do you accept?",
-    a: "We accept all major credit/debit cards, UPI, and digital wallets via Razorpay.",
+    a: "We accept all major credit/debit cards, UPI, and digital wallets via Paddle.",
   },
   {
-    q: "Can I upgrade or downgrade mid-month?",
-    a: "Yes! Changes take effect immediately. We'll prorate charges based on days remaining.",
+    q: "Can I change my plan?",
+    a: "Yes! You can upgrade or downgrade anytime. Changes take effect immediately. If you downgrade, you'll get a prorated credit.",
   },
   {
     q: "Do you offer refunds?",
-    a: "We offer a 7-day money-back guarantee if you're not satisfied with the service.",
+    a: "We offer a 7-day money-back guarantee if you're not satisfied. After that, monthly subscriptions auto-renew on your billing date.",
+  },
+  {
+    q: "What's the difference between Pro and Premium?",
+    a: `Pro gives you core features with limited automation (50 apps/day on 3 platforms). Premium unlocks full automation with 1000+ apps/day across all 8 platforms and priority support.`,
   },
 ];
 
 export default function BillingPage() {
-  const { email } = useAuth();
+  const user = useAuth();
+  const email = user?.email;
   const [currentPlan, setCurrentPlan] = useState<string>("free");
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
+  const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (email) {
       fetchCurrentPlan();
     }
+    
+    // Check for payment status from Paddle redirect
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("status");
+    const plan = params.get("plan");
+    
+    if (status === "success") {
+      setPaymentStatus(`Payment successful! Upgrading to ${plan}...`);
+      // Refresh plan after a moment to show updated plan
+      setTimeout(() => {
+        if (email) fetchCurrentPlan();
+      }, 2000);
+    } else if (status === "cancelled") {
+      setPaymentStatus("Payment cancelled. No charges were made.");
+    }
   }, [email]);
 
   const fetchCurrentPlan = async () => {
     try {
-      const res = await fetch(`/api/billing/plan/${email}`);
+      const res = await fetch(`${API}/api/billing/plan/${email}`);
       const data = await res.json();
       setCurrentPlan(data.plan);
     } catch (err) {
@@ -137,22 +161,36 @@ export default function BillingPage() {
     
     setUpgrading(planName);
     try {
-      const res = await fetch("/api/billing/upgrade", {
+      // Create checkout with Paddle
+      const res = await fetch(`${API}/api/billing/checkout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, new_plan: planName.toLowerCase() }),
+        body: JSON.stringify({
+          email,
+          plan: planName.toLowerCase(),
+          name: email.split("@")[0],
+        }),
       });
 
-      if (res.ok) {
-        setCurrentPlan(planName.toLowerCase());
-        alert(`Successfully upgraded to ${planName}!`);
+      if (!res.ok) {
+        const error = await res.json();
+        alert(`Payment setup failed: ${error.detail || "Unknown error"}`);
+        setUpgrading(null);
+        return;
+      }
+
+      const data = await res.json();
+      
+      // Redirect to Paddle checkout
+      if (data.checkout_url) {
+        window.location.href = data.checkout_url;
       } else {
-        alert("Upgrade failed. Please try again.");
+        alert("Could not create payment link. Please try again.");
+        setUpgrading(null);
       }
     } catch (err) {
-      console.error("Upgrade error:", err);
+      console.error("Checkout error:", err);
       alert("Payment processing failed. Please try again.");
-    } finally {
       setUpgrading(null);
     }
   };
@@ -182,6 +220,16 @@ export default function BillingPage() {
                 Current Plan: <span className="capitalize">{currentPlan}</span>
               </p>
             )}
+            
+            {paymentStatus && (
+              <div className={`mt-4 px-4 py-3 rounded-lg text-sm font-medium ${
+                paymentStatus.includes("successful") 
+                  ? "bg-green-50 text-green-700 border border-green-200"
+                  : "bg-yellow-50 text-yellow-700 border border-yellow-200"
+              }`}>
+                {paymentStatus}
+              </div>
+            )}
           </div>
 
           {/* Plans Grid */}
@@ -209,7 +257,7 @@ export default function BillingPage() {
                 <div className="mb-4">
                   <span className="text-4xl font-extrabold">₹{plan.price}</span>
                   <span className={`text-sm ml-2 ${plan.popular ? "text-indigo-200" : "text-gray-500"}`}>
-                    /month
+                    {plan.price > 0 ? "/month" : "forever"}
                   </span>
                 </div>
 
@@ -231,9 +279,9 @@ export default function BillingPage() {
                   }`}
                 >
                   {upgrading === plan.name
-                    ? "Processing..."
+                    ? "Processing Payment..."
                     : currentPlan === plan.name.toLowerCase()
-                    ? "Current Plan"
+                    ? "✓ Current Plan"
                     : plan.cta}
                 </button>
 
@@ -328,7 +376,7 @@ export default function BillingPage() {
               Have questions? <a href="/dashboard" className="text-indigo-600 hover:underline">Contact support</a>
             </p>
             <p>
-              Secure payment via Razorpay. Cancel anytime with no questions asked.
+              Payment processed securely via Paddle. One-time payment, no recurring charges. 7-day money-back guarantee.
             </p>
           </div>
         </div>

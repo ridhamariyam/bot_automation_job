@@ -88,7 +88,7 @@ export default function QuestionnairePage() {
         else body.append(k, v as string);
       });
       body.append("cv", form.cvFile);
-      const res = await fetch("http://localhost:8000/api/profile", { method: "POST", body });
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/profile`, { method: "POST", body });
       if (!res.ok) throw new Error();
       const data = await res.json();
       localStorage.setItem("jobrocket_user", JSON.stringify(data));

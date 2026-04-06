@@ -8,7 +8,7 @@ app = FastAPI(title="JobRocket API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://jobrocket.ai"],
+    allow_origins=["http://localhost:3000", "https://jobrocket.ai", "https://jobrocket.aiviora.online"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
