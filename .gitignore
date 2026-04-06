@@ -1,0 +1,20 @@
+# Python
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/jobrocket.db
+backend/uploads/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
+# Env
+.env
+backend/.env
+
+# OS
+.DS_Store
