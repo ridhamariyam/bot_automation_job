@@ -159,16 +159,25 @@ async def verify_platform(body: VerifyIn):
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        raise HTTPException(500, "Playwright not installed")
+        raise HTTPException(500, "Playwright not installed on this server")
 
     platform = body.platform.lower()
+    if platform not in ("linkedin", "indeed"):
+        raise HTTPException(400, f"Unsupported platform: {platform}")
+
+    # Chromium flags required for cloud/container environments (Render, Docker, etc.)
+    CHROMIUM_ARGS = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",   # avoids /dev/shm exhaustion on low-memory hosts
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--single-process",
+    ]
 
     async def _check() -> tuple[bool, str]:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
+            browser = await pw.chromium.launch(headless=True, args=CHROMIUM_ARGS)
             ctx = await browser.new_context(
                 user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
@@ -191,11 +200,10 @@ async def verify_platform(body: VerifyIn):
                         return False, "LinkedIn requires OTP verification. Log in once manually in your browser first, then retry."
                     return False, "LinkedIn login failed. Check your email and password."
 
-                elif platform == "indeed":
+                else:  # indeed
                     await page.goto("https://secure.indeed.com/auth", wait_until="domcontentloaded", timeout=20000)
                     await page.wait_for_timeout(2000)
 
-                    # Step 1 — email
                     email_sel = "input[name='__email'], input[type='email']"
                     await page.wait_for_selector(email_sel, timeout=8000)
                     await page.fill(email_sel, body.email)
@@ -206,7 +214,6 @@ async def verify_platform(body: VerifyIn):
                             break
                     await page.wait_for_timeout(3000)
 
-                    # Step 2 — password
                     pw_sel = "input[type='password']"
                     await page.wait_for_selector(pw_sel, timeout=8000)
                     await page.fill(pw_sel, body.password)
@@ -223,12 +230,14 @@ async def verify_platform(body: VerifyIn):
                     if "auth" not in url and "indeed.com" in url:
                         return True, "Indeed account verified successfully."
                     return False, "Indeed login failed. Check your email and password."
-
-                return False, f"Unknown platform: {platform}"
             finally:
                 await browser.close()
 
-    ok, message = await _check()
+    try:
+        ok, message = await _check()
+    except Exception as exc:
+        print(f"[verify] {platform} check failed: {exc}")
+        raise HTTPException(500, f"Browser check failed: {exc}")
 
     # Persist verified status to DB
     if ok:
