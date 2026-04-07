@@ -10,11 +10,9 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
     elif DATABASE_URL.startswith("postgresql://"):
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        connect_args={"sslmode": "require"},
-    )
+    if "sslmode" not in DATABASE_URL:
+        DATABASE_URL += "?sslmode=require"
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 else:
     # Local dev: SQLite
     DB_PATH = Path(__file__).parent / "jobrocket.db"
