@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import profile, jobs, auth, bot, billing
@@ -6,9 +7,25 @@ load_dotenv()
 
 app = FastAPI(title="JobRocket API", version="1.0.0")
 
+# Base origins always allowed
+_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://jobrocket.ai",
+    "https://www.jobrocket.ai",
+    "https://jobrocket.aiviora.online",
+    "https://www.jobrocket.aiviora.online",
+    "https://bot-automation-job.vercel.app",
+]
+
+# Allow extra origins from env var (comma-separated), e.g. Vercel preview URLs
+_extra = os.getenv("EXTRA_CORS_ORIGINS", "")
+if _extra:
+    _ORIGINS += [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://jobrocket.ai", "https://jobrocket.aiviora.online"],
+    allow_origins=_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
