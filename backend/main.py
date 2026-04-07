@@ -29,9 +29,31 @@ def health():
 @app.get("/db-check")
 def db_check():
     try:
-        from database import engine
+        from database import engine, Base
         with engine.connect() as conn:
             conn.execute(__import__("sqlalchemy").text("SELECT 1"))
-        return {"db": "ok"}
+        # Check tables
+        inspector = __import__("sqlalchemy").inspect(engine)
+        tables = inspector.get_table_names()
+        return {"db": "ok", "tables": tables}
     except Exception as e:
         return {"db": "error", "detail": str(e)}
+
+
+@app.post("/debug-register")
+def debug_register(body: dict):
+    try:
+        from database import SessionLocal, User
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        with SessionLocal() as db:
+            existing = db.get(User, body.get("email"))
+            if existing:
+                return {"result": "already exists"}
+            user = User(email=body["email"], name=body["name"], hashed_pw=pwd_context.hash(body["password"]))
+            db.add(user)
+            db.commit()
+            return {"result": "created"}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()}
