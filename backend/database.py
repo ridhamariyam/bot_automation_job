@@ -10,7 +10,11 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
     elif DATABASE_URL.startswith("postgresql://"):
         DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 10},
+    )
 else:
     # Local dev: SQLite
     DB_PATH = Path(__file__).parent / "jobrocket.db"
@@ -161,4 +165,8 @@ class Payment(Base):
     completed_at    = Column(DateTime, nullable=True)
 
 
-Base.metadata.create_all(bind=engine)
+def init_db():
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        print(f"[db] create_all failed (will retry on next request): {exc}")

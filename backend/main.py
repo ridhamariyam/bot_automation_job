@@ -1,11 +1,20 @@
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import profile, jobs, auth, bot, billing
 from dotenv import load_dotenv
 load_dotenv()
 
-app = FastAPI(title="JobRocket API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from database import init_db
+    init_db()
+    yield
+
+
+app = FastAPI(title="JobRocket API", version="1.0.0", lifespan=lifespan)
 
 # Base origins always allowed
 _ORIGINS = [
