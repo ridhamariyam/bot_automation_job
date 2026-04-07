@@ -3,6 +3,8 @@ import Link from "next/link";
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 function ResetForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -21,7 +23,7 @@ function ResetForm() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/reset-password`, {
+      const res = await fetch(`${API}/api/auth/reset-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, password }),

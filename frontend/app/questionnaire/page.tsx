@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "../lib/useAuth";
 import { JOB_TYPES, WORK_MODES, EXP_LEVELS, DATE_POSTED, COMPANY_SIZES, DEFAULT_FILTERS } from "../lib/jobFilters";
 
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export const PLATFORMS = [
   { id: "linkedin",    label: "LinkedIn",    color: "bg-[#0077B5]", free: true,  icon: "in" },
   { id: "indeed",      label: "Indeed",      color: "bg-[#003A9B]", free: false, icon: "II" },
@@ -88,7 +90,7 @@ export default function QuestionnairePage() {
         else body.append(k, v as string);
       });
       body.append("cv", form.cvFile);
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/profile`, { method: "POST", body });
+      const res = await fetch(`${API}/api/profile`, { method: "POST", body });
       if (!res.ok) throw new Error();
       const data = await res.json();
       localStorage.setItem("jobrocket_user", JSON.stringify(data));
