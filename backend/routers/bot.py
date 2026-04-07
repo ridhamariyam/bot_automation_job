@@ -232,23 +232,17 @@ async def verify_platform(body: VerifyIn):
 
     # Persist verified status to DB
     if ok:
+        from sqlalchemy import text
         with SessionLocal() as db:
-            user = db.get(User, body.email) if "@" in body.email else None
-            # find user by platform email
-            if not user:
-                from sqlalchemy import text
-                with SessionLocal() as db2:
-                    col = "linkedin_email" if platform == "linkedin" else "indeed_email"
-                    row = db2.execute(
-                        text(f"SELECT email FROM users WHERE {col} = :e"), {"e": body.email}
-                    ).fetchone()
-                    if row:
-                        user = db2.get(User, row[0])
-                        if platform == "linkedin":
-                            user.linkedin_verified = True
-                        else:
-                            user.indeed_verified = True
-                        db2.commit()
+            col = f"{platform}_email"
+            row = db.execute(
+                text(f"SELECT email FROM users WHERE {col} = :e"), {"e": body.email}
+            ).fetchone()
+            if row:
+                user = db.get(User, row[0])
+                if user:
+                    setattr(user, f"{platform}_verified", True)
+                    db.commit()
 
     return {"ok": ok, "message": message}
 
