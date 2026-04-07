@@ -24,3 +24,14 @@ app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/db-check")
+def db_check():
+    try:
+        from database import engine
+        with engine.connect() as conn:
+            conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+        return {"db": "ok"}
+    except Exception as e:
+        return {"db": "error", "detail": str(e)}
