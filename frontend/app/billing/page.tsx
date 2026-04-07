@@ -5,6 +5,19 @@ import { useAuth } from "../lib/useAuth";
 
 const API = process.env.NEXT_PUBLIC_API_URL as string;
 
+// Paddle Configuration
+const PADDLE_CLIENT_TOKEN = "live_15d057265d1b7dc9d9335c7eb3a";
+const PADDLE_PRICE_PRO = "pri_01knn4f6079a1nvpzzmf0g686m";
+const PADDLE_PRICE_PREMIUM = "pri_01knn4g3kd8nzzqz6f66vvahtc";
+const SUCCESS_URL = "https://jobrocket.aiviora.online/dashboard";
+
+// Extend window to include Paddle
+declare global {
+  interface Window {
+    Paddle?: any;
+  }
+}
+
 interface Plan {
   name: string;
   price: number;
@@ -93,7 +106,11 @@ const PLANS: Plan[] = [
 const FAQ = [
   {
     q: "Is this a subscription or one-time payment?",
-    a: "Pro and Premium are monthly subscriptions. Free is forever free with no card required. Cancel anytime from your account settings.",
+    a: "All new users get a FREE 7-day premium trial with all features unlocked. After the trial ends, you can upgrade to a monthly subscription (Pro or Premium) or stay on the Free plan with limited features.",
+  },
+  {
+    q: "What happens when my trial ends?",
+    a: "Your account automatically downgrades to the Free plan (5 apps/day, LinkedIn only) after 7 days. You can upgrade anytime to continue using premium features.",
   },
   {
     q: "How do daily limits work?",
@@ -105,15 +122,15 @@ const FAQ = [
   },
   {
     q: "Can I change my plan?",
-    a: "Yes! You can upgrade or downgrade anytime. Changes take effect immediately. If you downgrade, you'll get a prorated credit.",
+    a: "Yes! You can upgrade or downgrade anytime. Changes take effect immediately. NOTE: There are NO REFUNDS and NO CREDITS given when downgrading your plan.",
   },
   {
     q: "Do you offer refunds?",
-    a: "We offer a 7-day money-back guarantee if you're not satisfied. After that, monthly subscriptions auto-renew on your billing date.",
+    a: "NO REFUNDS are provided for any subscription payments. This includes downgrading your plan. Monthly subscriptions auto-renew on your billing date.",
   },
   {
     q: "What's the difference between Pro and Premium?",
-    a: `Pro gives you core features with limited automation (50 apps/day on 3 platforms). Premium unlocks full automation with 1000+ apps/day across all 8 platforms and priority support.`,
+    a: `Pro gives you core features with limited automation (50 apps/day on 3 platforms: LinkedIn, Indeed, Glassdoor). Premium unlocks full automation with 1000+ apps/day across all 8 platforms and priority support.`,
   },
 ];
 
@@ -121,13 +138,42 @@ export default function BillingPage() {
   const user = useAuth();
   const email = user?.email;
   const [currentPlan, setCurrentPlan] = useState<string>("free");
+  const [trialInfo, setTrialInfo] = useState<any>(null);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
+  const [paddleReady, setPaddleReady] = useState(false);
+
+  // Initialize Paddle on mount
+  useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.paddle.com/paddle/v2/paddle.js";
+    script.async = true;
+    script.onload = () => {
+      if (window.Paddle) {
+        // Set to production environment
+        window.Paddle.Environment.set("production");
+        
+        // Initialize with live token
+        window.Paddle.Initialize({
+          token: PADDLE_CLIENT_TOKEN,
+        });
+        setPaddleReady(true);
+      }
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      if (document.head.contains(script)) {
+        document.head.removeChild(script);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (email) {
       fetchCurrentPlan();
+      fetchTrialStatus();
     }
     
     // Check for payment status from Paddle redirect
@@ -156,43 +202,50 @@ export default function BillingPage() {
     }
   };
 
-  const handleUpgrade = async (planName: string) => {
-    if (!email) return;
-    
-    setUpgrading(planName);
+  const fetchTrialStatus = async () => {
     try {
-      // Create checkout with Paddle
-      const res = await fetch(`${API}/api/billing/checkout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          plan: planName.toLowerCase(),
-          name: email.split("@")[0],
-        }),
-      });
-
-      if (!res.ok) {
-        const error = await res.json();
-        alert(`Payment setup failed: ${error.detail || "Unknown error"}`);
-        setUpgrading(null);
-        return;
-      }
-
+      const res = await fetch(`${API}/api/billing/trial-status/${email}`);
       const data = await res.json();
-      
-      // Redirect to Paddle checkout
-      if (data.checkout_url) {
-        window.location.href = data.checkout_url;
-      } else {
-        alert("Could not create payment link. Please try again.");
-        setUpgrading(null);
-      }
+      setTrialInfo(data);
     } catch (err) {
-      console.error("Checkout error:", err);
-      alert("Payment processing failed. Please try again.");
-      setUpgrading(null);
+      console.error("Failed to fetch trial status:", err);
     }
+  };
+
+  const handleUpgrade = (planName: string) => {
+    if (!paddleReady || !window.Paddle) {
+      alert("Payment system is loading. Please try again in a moment.");
+      return;
+    }
+
+    if (!email) {
+      alert("Please log in to upgrade your plan.");
+      return;
+    }
+
+    // Determine price ID based on plan
+    const priceId = planName.toLowerCase() === "pro" ? PADDLE_PRICE_PRO : PADDLE_PRICE_PREMIUM;
+
+    setUpgrading(planName);
+
+    // Use Paddle's client-side checkout
+    window.Paddle.Checkout.open({
+      items: [
+        {
+          priceId: priceId,
+          quantity: 1,
+        },
+      ],
+      customer: {
+        email: email,
+      },
+      settings: {
+        displayMode: "overlay",
+        successUrl: SUCCESS_URL,
+      },
+    });
+
+    setUpgrading(null);
   };
 
   return (
@@ -207,6 +260,47 @@ export default function BillingPage() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col px-4 py-16">
         <div className="max-w-7xl mx-auto w-full">
+          {/* Trial Banner */}
+          {trialInfo?.trial?.active && (
+            <div className="mb-12 bg-gradient-to-r from-purple-50 to-indigo-50 border-2 border-purple-200 rounded-2xl p-6 text-center">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <svg className="w-6 h-6 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v4h8v-4zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
+                </svg>
+                <h2 className="text-2xl font-bold text-purple-900">
+                  🎉 You're on the Premium Trial!
+                </h2>
+              </div>
+              <p className="text-lg text-purple-700 mb-2">
+                <span className="font-bold text-2xl">{trialInfo.trial.days_remaining}</span> days of unlimited access remaining
+              </p>
+              <p className="text-purple-600 text-sm">
+                All 8 job platforms unlocked • 1000+ applications/day • Full automation enabled
+              </p>
+              {trialInfo.trial.days_remaining <= 3 && (
+                <div className="mt-4 text-orange-700 font-semibold text-sm">
+                  ⏰ Your trial is ending soon! Upgrade now to keep your momentum.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Upgrade Required Banner */}
+          {trialInfo?.upgrade_required && (
+            <div className="mb-12 bg-yellow-50 border-2 border-yellow-200 rounded-2xl p-6 text-center">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                <h2 className="text-2xl font-bold text-yellow-900">
+                  Trial Expired - Upgrade to Continue
+                </h2>
+              </div>
+              <p className="text-yellow-700 text-sm">
+                Your 7-day premium trial has ended. Choose a plan below to keep using premium features.
+              </p>
+            </div>
+          )}
           {/* Section: Plans */}
           <div className="text-center mb-16">
             <h1 className="text-4xl font-extrabold text-gray-900 mb-4">
@@ -375,9 +469,20 @@ export default function BillingPage() {
             <p className="mb-4">
               Have questions? <a href="/dashboard" className="text-indigo-600 hover:underline">Contact support</a>
             </p>
-            <p>
-              Payment processed securely via Paddle. One-time payment, no recurring charges. 7-day money-back guarantee.
+            <p className="mb-4">
+              Payment processed securely via Paddle.
             </p>
+            
+            {/* Policy Notice */}
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-8 text-red-900">
+              <p className="font-semibold mb-2">⚠️ Important: Refund & Credit Policy</p>
+              <ul className="text-left inline-block text-sm space-y-1">
+                <li>✗ NO REFUNDS are given for any subscription payments</li>
+                <li>✗ NO CREDITS are issued when downgrading your plan</li>
+                <li>✓ All payments are final - ensure you choose the right plan before upgrading</li>
+                <li>✓ Monthly subscriptions auto-renew. You can cancel from Settings anytime</li>
+              </ul>
+            </div>
           </div>
         </div>
       </main>

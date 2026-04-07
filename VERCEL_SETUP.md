@@ -55,7 +55,7 @@ If `npm run build` fails, fix the errors shown before deploying to Vercel.
 1. **Settings** → **Environment Variables**
 2. Verify:
    - Variable name: `NEXT_PUBLIC_API_URL`
-   - Variable value: `https://api.jobrocket.aiviora.online`
+   - Variable value: `https://api.JobRocketviora.online`
    - Environments: Check both **Production** and **Preview** are selected
 3. If changed, redeploy again
 
@@ -105,9 +105,9 @@ If this shows errors, fix them before Vercel will work.
 
 ---
 
-**For Production (jobrocket.aiviora.online):**
+**For Production (JobRocketviora.online):**
 ```
-NEXT_PUBLIC_API_URL = https://api.jobrocket.aiviora.online
+NEXT_PUBLIC_API_URL = https://api.JobRocketviora.online
 ```
 
 **For Local Development (http://localhost:3000):**

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start both frontend and backend in dev mode
 
-echo "Starting JobRocket.ai dev servers..."
+echo "Starting JobRocket dev servers..."
 
 # Backend
 (cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000) &

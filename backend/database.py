@@ -73,6 +73,15 @@ class User(Base):
     hashed_pw           = Column(String, nullable=False)
     plan                = Column(String, default="free")
     
+    # Trial: 7-day premium trial for all new users
+    trial_start         = Column(DateTime, nullable=True)
+    trial_end           = Column(DateTime, nullable=True)
+    trial_used          = Column(Integer, default=0)  # 0 = not used, 1 = trial given
+    
+    # Billing & Payment
+    payment_status      = Column(String, default="trial")  # trial | active | expired | free
+    last_payment_id     = Column(String, nullable=True)
+    
     # LinkedIn
     linkedin_email      = Column(String, nullable=True)
     linkedin_password   = Column(String, nullable=True)

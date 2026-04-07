@@ -18,6 +18,43 @@ BOT_SCRIPT = Path(__file__).parent.parent.parent / "bot" / "runner.py"
 PYTHON     = Path(__file__).parent.parent / "venv" / "bin" / "python"
 
 
+def _get_user_access_info(user: User) -> tuple[str, str, bool]:
+    """
+    Returns (plan_name, message, has_access).
+    - has_access: True if user has active trial or paid subscription
+    - Automatically degrades users with expired trial to free plan
+    """
+    now = datetime.utcnow()
+    
+    # Check if trial is active
+    if user.trial_end and now < user.trial_end:
+        days_left = (user.trial_end - now).days
+        msg = f"7-day trial active ({days_left} days remaining). All premium features unlocked."
+        return "premium", msg, True
+    
+    # Trial expired or not used
+    if user.trial_end and now >= user.trial_end and user.payment_status == "trial":
+        # Degrade to free
+        user.plan = "free"
+        user.payment_status = "expired"
+        # Save to DB
+        with SessionLocal() as db:
+            db.merge(user)
+            db.commit()
+        return "free", "Trial expired. Downgraded to free plan (5 apps/day). Upgrade to continue.", True
+    
+    # Check if they have an active paid subscription (assuming payment_status = "active" means paid)
+    if user.payment_status == "active" and user.plan in ["pro", "premium"]:
+        return user.plan, f"Active subscription: {PLAN_FEATURES[user.plan]['name']}", True
+    
+    # Free plan
+    if user.plan == "free" or user.payment_status == "expired":
+        return "free", "Free plan (5 apps/day). Upgrade to continue.", True
+    
+    # Default to free if no subscription
+    return "free", "Free trial ended. Please upgrade.", False
+
+
 class StartIn(BaseModel):
     email: str
     token: str
@@ -48,26 +85,36 @@ async def start_bot(body: StartIn):
         if not user:
             raise HTTPException(404, "User not found")
         
-        # Get user's plan and features
-        plan = user.plan or "free"
+        # Get user's access info (auto-degrade expired trials to free)
+        plan, status_msg, has_access = _get_user_access_info(user)
+        
+        if not has_access:
+            raise HTTPException(403, f"No access. {status_msg}")
+        
+        # Get plan config
         plan_config = PLAN_FEATURES.get(plan)
         if not plan_config:
             raise HTTPException(400, f"Invalid plan: {plan}")
         
-        # Check if user has credentials for any platform in their plan
+        # Get all available platforms (premium can use all 8, pro uses 3, free uses 1)
         available_platforms = plan_config["platforms"]
+        
+        # Check if user has verified credentials for ANY platform in their plan
         has_credentials = False
+        verified_platforms = []
         for platform in available_platforms:
             email_field = f"{platform}_email"
-            if hasattr(user, email_field) and getattr(user, email_field):
+            verified_field = f"{platform}_verified"
+            if (hasattr(user, email_field) and getattr(user, email_field) and
+                hasattr(user, verified_field) and getattr(user, verified_field)):
                 has_credentials = True
-                break
+                verified_platforms.append(platform)
         
         if not has_credentials:
             platforms_str = ", ".join(available_platforms)
             raise HTTPException(
-                400, 
-                f"No platform credentials saved for your plan. Go to Settings → Platforms and add credentials for: {platforms_str}"
+                400,
+                f"No verified platform credentials. Go to Settings → Platforms and verify at least one: {platforms_str}"
             )
         
         # Check daily application limit
@@ -89,10 +136,20 @@ async def start_bot(body: StartIn):
         # Enforce max_jobs does not exceed plan limit and remaining for today
         effective_max = min(body.max_jobs or 50, remaining)
         
+        # Prepare log message with trial/subscription info
+        trial_info = ""
+        if user.trial_end:
+            from datetime import datetime as dt
+            if dt.utcnow() < user.trial_end:
+                days_left = (user.trial_end - dt.utcnow()).days
+                trial_info = f" | Trial: {days_left} days"
+            else:
+                trial_info = " | Trial expired"
+        
         # Log the start attempt with plan info
         log_entry = BotLog(
             user_email=body.email,
-            message=f"Bot starting on plan '{plan}' ({available_platforms[0]}+). Max jobs today: {effective_max} (used {today_count}/{max_daily})",
+            message=f"Bot starting on {plan.upper()} ({', '.join(verified_platforms)}). Max jobs: {effective_max} (used {today_count}/{max_daily}){trial_info}",
             level="info",
             created_at=datetime.utcnow()
         )
@@ -241,19 +298,82 @@ async def verify_platform(body: VerifyIn):
 
     # Persist verified status to DB
     if ok:
-        from sqlalchemy import text
-        with SessionLocal() as db:
-            col = f"{platform}_email"
-            row = db.execute(
-                text(f"SELECT email FROM users WHERE {col} = :e"), {"e": body.email}
-            ).fetchone()
-            if row:
-                user = db.get(User, row[0])
+        try:
+            with SessionLocal() as db:
+                col_name = f"{platform}_email"
+                # Find user by the platform email they provided
+                user = db.query(User).filter(
+                    getattr(User, col_name) == body.email
+                ).first()
                 if user:
                     setattr(user, f"{platform}_verified", True)
                     db.commit()
+        except Exception as db_exc:
+            print(f"[verify] Failed to update verified status for {platform}: {db_exc}")
+            # Don't fail the response, user is still verified even if DB update fails
 
     return {"ok": ok, "message": message}
+
+
+@router.get("/platforms/{email}")
+def get_connected_platforms(email: str):
+    """Get user's connected and verified platforms."""
+    with SessionLocal() as db:
+        user = db.get(User, email)
+        if not user:
+            raise HTTPException(404, "User not found")
+        
+        # Determine which platforms user has access to
+        plan = user.plan or "free"
+        available_platforms = PLAN_FEATURES[plan]["platforms"]
+        
+        connected_platforms = []
+        for platform in available_platforms:
+            email_field = f"{platform}_email"
+            verified_field = f"{platform}_verified"
+            
+            has_creds = bool(getattr(user, email_field, None))
+            is_verified = bool(getattr(user, verified_field, 0))
+            
+            connected_platforms.append({
+                "platform": platform,
+                "configured": has_creds,
+                "verified": is_verified,
+                "status": "verified" if is_verified else ("configured" if has_creds else "not_configured"),
+            })
+        
+        return {
+            "email": email,
+            "plan": plan,
+            "platforms": connected_platforms,
+            "verified_count": sum(1 for p in connected_platforms if p["verified"]),
+            "total_available": len(connected_platforms),
+        }
+
+
+@router.post("/platforms/{email}/update-credentials")
+def update_platform_credentials(email: str, data: dict):
+    """Update platform credentials for a user."""
+    with SessionLocal() as db:
+        user = db.get(User, email)
+        if not user:
+            raise HTTPException(404, "User not found")
+        
+        platform = data.get("platform", "").lower()
+        if platform not in PLAN_FEATURES[user.plan or "free"]["platforms"]:
+            raise HTTPException(400, f"Platform {platform} not available for user's plan")
+        
+        # Update credentials
+        setattr(user, f"{platform}_email", data.get("email"))
+        setattr(user, f"{platform}_password", data.get("password"))
+        setattr(user, f"{platform}_verified", 0)  # Reset verification
+        
+        db.commit()
+        
+        return {
+            "platform": platform,
+            "message": f"Credentials updated for {platform}. Please verify in Settings.",
+        }
 
 
 @router.post("/log")

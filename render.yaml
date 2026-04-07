@@ -30,7 +30,7 @@ services:
       - key: PADDLE_PRICE_PREMIUM
         value: pri_01kkvt1en449pt4vgw3mv50ca2
       - key: FRONTEND_URL
-        value: https://jobrocket.aiviora.online
+        value: https://JobRocketviora.online
       - key: EXTRA_CORS_ORIGINS
         sync: false
 

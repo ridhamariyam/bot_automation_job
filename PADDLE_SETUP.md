@@ -1,6 +1,6 @@
 # Paddle Payment Integration Setup
 
-This guide explains how to set up Paddle payment processing for your JobRocket.ai application.
+This guide explains how to set up Paddle payment processing for your JobRocket application.
 
 ## 1. Paddle Account Setup
 
@@ -22,13 +22,13 @@ This guide explains how to set up Paddle payment processing for your JobRocket.a
 In your Paddle Dashboard, create two products (one for each paid plan):
 
 ### Product 1: Pro Plan
-- **Name**: JobRocket.ai Pro
+- **Name**: JobRocket Pro
 - **Price**: ₹599 (one-time)
 - **Type**: One-time payment
 - **Paddle Price ID**: Store this ID
 
 ### Product 2: Premium Plan
-- **Name**: JobRocket.ai Premium
+- **Name**: JobRocket Premium
 - **Price**: ₹599 (one-time)
 - **Type**: One-time payment
 - **Paddle Price ID**: Store this ID

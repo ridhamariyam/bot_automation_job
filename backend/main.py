@@ -18,11 +18,12 @@ app = FastAPI(
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:3001",
-    "https://jobrocket.ai",
-    "https://www.jobrocket.ai",
-    "https://jobrocket.aiviora.online",
-    "https://www.jobrocket.aiviora.online",
+    "https://JobRocket",
+    "https://www.JobRocket",
+    "https://JobRocketviora.online",
+    "https://www.JobRocketviora.online",
     "https://bot-automation-job.vercel.app",
+    "https://jobrocket-backend-9uxh.onrender.com"
 ]
 
 # Allow extra origins from environment variable

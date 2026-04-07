@@ -3,7 +3,7 @@ import os
 import hmac
 import hashlib
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from database import SessionLocal, User, PLAN_FEATURES, Payment
@@ -66,6 +66,15 @@ def get_user_plan(email: str):
         plan_id = user.plan or "free"
         plan = PLAN_FEATURES.get(plan_id, PLAN_FEATURES["free"])
         
+        # Calculate trial info
+        now = datetime.utcnow()
+        trial_active = False
+        trial_days_remaining = 0
+        
+        if user.trial_end and now < user.trial_end:
+            trial_active = True
+            trial_days_remaining = (user.trial_end - now).days + 1
+        
         return {
             "plan": plan_id,
             "name": plan["name"],
@@ -73,6 +82,55 @@ def get_user_plan(email: str):
             "max_apps_per_day": plan["max_apps_per_day"],
             "price": plan["price_display"],
             "type": plan["type"],
+            "trial": {
+                "active": trial_active,
+                "days_remaining": trial_days_remaining,
+                "end_date": user.trial_end.isoformat() if user.trial_end else None,
+            },
+            "payment_status": user.payment_status,
+        }
+
+
+@router.get("/trial-status/{email}")
+def get_trial_status(email: str):
+    """Get detailed trial & subscription status."""
+    with SessionLocal() as db:
+        user = db.get(User, email)
+        if not user:
+            raise HTTPException(404, "User not found")
+        
+        now = datetime.utcnow()
+        trial_active = False
+        trial_days_remaining = 0
+        trial_end_date = None
+        
+        if user.trial_end and now < user.trial_end:
+            trial_active = True
+            trial_days_remaining = (user.trial_end - now).days + 1
+            trial_end_date = user.trial_end.isoformat()
+        
+        return {
+            "email": email,
+            "plan": user.plan or "free",
+            "payment_status": user.payment_status,
+            "trial": {
+                "active": trial_active,
+                "days_remaining": trial_days_remaining,
+                "end_date": trial_end_date,
+                "message": (
+                    f"7-day premium trial active! {trial_days_remaining} days remaining. All features unlocked."
+                    if trial_active
+                    else "Trial expired. Please upgrade to continue using premium features."
+                ),
+            },
+            "platforms": {
+                "free": PLAN_FEATURES["free"]["platforms"],
+                "pro": PLAN_FEATURES["pro"]["platforms"],
+                "premium": PLAN_FEATURES["premium"]["platforms"],
+                "available_for_user": PLAN_FEATURES[user.plan or "free"]["platforms"],
+            },
+            "max_apps_per_day": PLAN_FEATURES[user.plan or "free"]["max_apps_per_day"],
+            "upgrade_required": trial_active is False and user.payment_status == "expired",
         }
 
 
@@ -296,8 +354,15 @@ def _handle_transaction_completed(event_data: dict) -> dict:
             if not plan_id or plan_id not in ["pro", "premium"]:
                 plan_id = "pro"  # Default to pro if not specified
             
-            # Update user plan
+            # Update user plan and payment status
             user.plan = plan_id
+            user.payment_status = "active"
+            
+            # Clear trial on payment (user has paid, trial no longer applies)
+            user.trial_end = None
+            user.trial_start = None
+            
+            user.last_payment_id = f"paddle_{transaction_id}"
             
             # Get amount from charges/items
             amount_paise = 59900  # Default to ₹599
@@ -331,6 +396,7 @@ def _handle_transaction_completed(event_data: dict) -> dict:
             "user": customer_email,
             "transaction_id": transaction_id,
             "plan": plan_id,
+            "message": "Payment successful! Your premium features are now active.",
         }
     
     except Exception as e:

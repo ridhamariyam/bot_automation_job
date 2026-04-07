@@ -45,7 +45,27 @@ def _make_token(email: str) -> str:
 
 
 def _user_dict(user: User) -> dict:
-    return {"id": user.email, "email": user.email, "name": user.name, "plan": user.plan}
+    # Calculate trial status
+    now = datetime.utcnow()
+    trial_active = False
+    days_remaining = 0
+    
+    if user.trial_end and now < user.trial_end:
+        trial_active = True
+        days_remaining = max(0, (user.trial_end - now).days)
+    
+    return {
+        "id": user.email,
+        "email": user.email,
+        "name": user.name,
+        "plan": user.plan,
+        "payment_status": user.payment_status,
+        "trial": {
+            "active": trial_active,
+            "days_remaining": days_remaining,
+            "end": user.trial_end.isoformat() if user.trial_end else None
+        }
+    }
 
 
 def _send_reset_email(to_email: str, reset_link: str):
@@ -62,7 +82,7 @@ def _send_reset_email(to_email: str, reset_link: str):
     text = f"Reset your password:\n\n{reset_link}\n\nExpires in 1 hour."
     html = f"""
     <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#0a0a0f;color:#fff;border-radius:12px;">
-      <h2 style="color:#818cf8;margin-bottom:8px;">JobRocket.ai</h2>
+      <h2 style="color:#818cf8;margin-bottom:8px;">JobRocket</h2>
       <h3 style="margin-bottom:8px;">Reset your password</h3>
       <p style="color:#9ca3af;margin-bottom:24px;">Click the button below. Link expires in 1 hour.</p>
       <a href="{reset_link}" style="display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:600;">
@@ -85,15 +105,37 @@ def register(body: RegisterIn):
     with SessionLocal() as db:
         if db.get(User, body.email):
             raise HTTPException(400, "Email already registered")
+        
+        # Create new user with 7-day premium trial
+        trial_start = datetime.utcnow()
+        trial_end = trial_start + timedelta(days=7)
+        
         user = User(
             email=body.email,
             name=body.name,
             hashed_pw=pwd_context.hash(body.password),
+            plan="premium",  # Default to premium during trial
+            trial_start=trial_start,
+            trial_end=trial_end,
+            trial_used=1,
+            payment_status="trial"
         )
         db.add(user)
         db.commit()
         db.refresh(user)
-        return {"token": _make_token(user.email), "user": _user_dict(user)}
+        return {
+            "token": _make_token(user.email),
+            "user": {
+                **_user_dict(user),
+                "trial": {
+                    "active": True,
+                    "start": trial_start.isoformat(),
+                    "end": trial_end.isoformat(),
+                    "days_remaining": 7,
+                    "message": "You have 7 days of premium access. All platforms unlocked!"
+                }
+            }
+        }
 
 
 @router.post("/login")
