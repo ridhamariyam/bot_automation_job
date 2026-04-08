@@ -251,8 +251,62 @@ app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
 app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 
 # ═════════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK & DIAGNOSTIC ENDPOINTS
+# APP STARTUP - AUTO-MIGRATE DATABASE IF NEEDED
 # ═════════════════════════════════════════════════════════════════════════════
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Auto-run database migrations on app startup.
+    Adds trial/payment columns if they don't exist yet.
+    """
+    try:
+        from database import engine
+        from sqlalchemy import text, inspect
+        
+        logger.info("🔄 Checking database schema on startup...")
+        
+        # Check if columns exist
+        inspector = inspect(engine)
+        existing_columns = [col['name'] for col in inspector.get_columns("users")]
+        
+        required_columns = ['trial_start', 'trial_end', 'trial_used', 'payment_status', 'last_payment_id']
+        missing_columns = [c for c in required_columns if c not in existing_columns]
+        
+        if not missing_columns:
+            logger.info("✅ All required columns exist")
+            return
+        
+        logger.info(f"⚠️  Missing columns: {missing_columns}. Running migration...")
+        
+        # SQL to add missing columns
+        migration_sql = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_start TIMESTAMP DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'free'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_id VARCHAR(255) DEFAULT NULL",
+        ]
+        
+        with engine.begin() as conn:
+            for sql in migration_sql:
+                try:
+                    conn.execute(text(sql))
+                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
+                    logger.info(f"✅ Migrated: {col_name}")
+                except Exception as e:
+                    logger.debug(f"Column migration info: {str(e)}")
+        
+        logger.info("✅ Database migration completed")
+        
+    except Exception as e:
+        logger.error(f"❌ Startup migration error: {str(e)}", exc_info=True)
+        # Don't fail startup if migration fails, just log it
+        pass
+
+# ═════════════════════════════════════════════════════════════════════════════
+# HEALTH CHECK & DIAGNOSTIC ENDPOINTS
+# ═════════════════════════════════════════────════════════════────────────────
 
 @app.get("/health")
 def health():
@@ -419,67 +473,5 @@ def migrate_add_trial_columns(api_key: str = None):
                 "error": "Migration failed",
                 "detail": str(e),
                 "type": type(e).__name__,
-            }
-        )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TEMPORARY DEBUG ENDPOINT FOR DATABASE MIGRATION (REMOVE IN PRODUCTION)
-# ─────────────────────────────────────────────────────────────────────────────
-@app.post("/debug/migrate-now")
-def debug_migrate_now():
-    """
-    Temporary debug endpoint to run migration without authentication.
-    REMOVE THIS IN PRODUCTION!
-    """
-    try:
-        from database import engine
-        from sqlalchemy import text, inspect
-        
-        logger.info("🚀 [DEBUG] Starting database migration...")
-        
-        migration_sql = [
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_start TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used INTEGER DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'free'",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_id VARCHAR(255) DEFAULT NULL",
-        ]
-        
-        results = []
-        with engine.begin() as conn:
-            for sql in migration_sql:
-                try:
-                    conn.execute(text(sql))
-                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
-                    logger.info(f"✅ Added column: {col_name}")
-                    results.append({"column": col_name, "status": "added"})
-                except Exception as col_error:
-                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
-                    logger.info(f"ℹ️  Column {col_name} already exists or skipped")
-                    results.append({"column": col_name, "status": "skipped"})
-        
-        inspector = inspect(engine)
-        columns = [col['name'] for col in inspector.get_columns("users")]
-        
-        logger.info(f"✅ Migration completed. Users table now has {len(columns)} columns")
-        
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Migration completed successfully",
-                "columns_processed": results,
-                "total_columns": len(columns),
-            }
-        )
-    
-    except Exception as e:
-        logger.error(f"❌ Migration error: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Migration failed",
-                "detail": str(e),
             }
         )
