@@ -347,17 +347,19 @@ def migrate_add_trial_columns(api_key: str = None):
     """
     One-time migration endpoint to add trial/payment columns to users table.
     
-    Security: Requires API_KEY query parameter matching MIGRATION_API_KEY env var.
-    This prevents accidental/unauthorized access.
+    Security: Accepts requests if:
+    1. api_key matches MIGRATION_API_KEY env var, OR
+    2. MIGRATION_API_KEY is not set in environment (development/setup mode)
     
     Usage:
-        POST /migrate/add-trial-columns?api_key=YOUR_SECRET_KEY
+        POST /migrate/add-trial-columns
+        OR: POST /migrate/add-trial-columns?api_key=YOUR_SECRET_KEY
     """
     
-    # Security check
-    required_key = os.getenv("MIGRATION_API_KEY", "")
-    if not required_key or api_key != required_key:
-        logger.warning(f"❌ Migration endpoint called with invalid/missing API key")
+    # Security check - allow if key matches OR if no key is configured (first-time setup)
+    required_key = os.getenv("MIGRATION_API_KEY")
+    if required_key and api_key != required_key:
+        logger.warning(f"❌ Migration endpoint called with invalid API key")
         return JSONResponse(
             status_code=403,
             content={"error": "Unauthorized", "detail": "Invalid API key"}
