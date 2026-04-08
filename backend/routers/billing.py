@@ -63,17 +63,18 @@ def get_user_plan(email: str):
         if not user:
             raise HTTPException(404, "User not found")
         
-        plan_id = user.plan or "free"
+        plan_id = getattr(user, "plan", None) or "free"
         plan = PLAN_FEATURES.get(plan_id, PLAN_FEATURES["free"])
         
-        # Calculate trial info
+        # Calculate trial info (safe access for legacy users)
         now = datetime.utcnow()
         trial_active = False
         trial_days_remaining = 0
+        trial_end = getattr(user, "trial_end", None)
         
-        if user.trial_end and now < user.trial_end:
+        if trial_end and now < trial_end:
             trial_active = True
-            trial_days_remaining = (user.trial_end - now).days + 1
+            trial_days_remaining = (trial_end - now).days + 1
         
         return {
             "plan": plan_id,
@@ -85,9 +86,9 @@ def get_user_plan(email: str):
             "trial": {
                 "active": trial_active,
                 "days_remaining": trial_days_remaining,
-                "end_date": user.trial_end.isoformat() if user.trial_end else None,
+                "end_date": trial_end.isoformat() if trial_end else None,
             },
-            "payment_status": user.payment_status,
+            "payment_status": getattr(user, "payment_status", "free"),
         }
 
 
@@ -103,16 +104,19 @@ def get_trial_status(email: str):
         trial_active = False
         trial_days_remaining = 0
         trial_end_date = None
+        trial_end = getattr(user, "trial_end", None)
+        plan = getattr(user, "plan", None) or "free"
+        payment_status = getattr(user, "payment_status", "free")
         
-        if user.trial_end and now < user.trial_end:
+        if trial_end and now < trial_end:
             trial_active = True
-            trial_days_remaining = (user.trial_end - now).days + 1
-            trial_end_date = user.trial_end.isoformat()
+            trial_days_remaining = (trial_end - now).days + 1
+            trial_end_date = trial_end.isoformat()
         
         return {
             "email": email,
-            "plan": user.plan or "free",
-            "payment_status": user.payment_status,
+            "plan": plan,
+            "payment_status": payment_status,
             "trial": {
                 "active": trial_active,
                 "days_remaining": trial_days_remaining,
@@ -127,10 +131,10 @@ def get_trial_status(email: str):
                 "free": PLAN_FEATURES["free"]["platforms"],
                 "pro": PLAN_FEATURES["pro"]["platforms"],
                 "premium": PLAN_FEATURES["premium"]["platforms"],
-                "available_for_user": PLAN_FEATURES[user.plan or "free"]["platforms"],
+                "available_for_user": PLAN_FEATURES[plan]["platforms"],
             },
-            "max_apps_per_day": PLAN_FEATURES[user.plan or "free"]["max_apps_per_day"],
-            "upgrade_required": trial_active is False and user.payment_status == "expired",
+            "max_apps_per_day": PLAN_FEATURES[plan]["max_apps_per_day"],
+            "upgrade_required": trial_active is False and payment_status == "expired",
         }
 
 

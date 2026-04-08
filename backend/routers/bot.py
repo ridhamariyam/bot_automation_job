@@ -23,32 +23,41 @@ def _get_user_access_info(user: User) -> tuple[str, str, bool]:
     Returns (plan_name, message, has_access).
     - has_access: True if user has active trial or paid subscription
     - Automatically degrades users with expired trial to free plan
+    - Safely handles users without trial fields (legacy users)
     """
     now = datetime.utcnow()
     
+    # Safe access to trial fields (may be None for legacy users)
+    trial_end = getattr(user, "trial_end", None)
+    payment_status = getattr(user, "payment_status", "free")
+    plan = getattr(user, "plan", "free") or "free"
+    
     # Check if trial is active
-    if user.trial_end and now < user.trial_end:
-        days_left = (user.trial_end - now).days
+    if trial_end and now < trial_end:
+        days_left = (trial_end - now).days
         msg = f"7-day trial active ({days_left} days remaining). All premium features unlocked."
         return "premium", msg, True
     
     # Trial expired or not used
-    if user.trial_end and now >= user.trial_end and user.payment_status == "trial":
+    if trial_end and now >= trial_end and payment_status == "trial":
         # Degrade to free
-        user.plan = "free"
-        user.payment_status = "expired"
-        # Save to DB
-        with SessionLocal() as db:
-            db.merge(user)
-            db.commit()
+        try:
+            with SessionLocal() as db:
+                db_user = db.get(User, user.email)
+                if db_user:
+                    db_user.plan = "free"
+                    db_user.payment_status = "expired"
+                    db.commit()
+        except Exception as e:
+            print(f"[bot] Failed to auto-degrade user {user.email}: {e}")
         return "free", "Trial expired. Downgraded to free plan (5 apps/day). Upgrade to continue.", True
     
-    # Check if they have an active paid subscription (assuming payment_status = "active" means paid)
-    if user.payment_status == "active" and user.plan in ["pro", "premium"]:
-        return user.plan, f"Active subscription: {PLAN_FEATURES[user.plan]['name']}", True
+    # Check if they have an active paid subscription
+    if payment_status == "active" and plan in ["pro", "premium"]:
+        return plan, f"Active subscription: {PLAN_FEATURES[plan]['name']}", True
     
-    # Free plan
-    if user.plan == "free" or user.payment_status == "expired":
+    # Free plan (default for legacy users without trial)
+    if plan == "free" or payment_status == "expired" or payment_status == "free":
         return "free", "Free plan (5 apps/day). Upgrade to continue.", True
     
     # Default to free if no subscription
@@ -138,10 +147,10 @@ async def start_bot(body: StartIn):
         
         # Prepare log message with trial/subscription info
         trial_info = ""
-        if user.trial_end:
-            from datetime import datetime as dt
-            if dt.utcnow() < user.trial_end:
-                days_left = (user.trial_end - dt.utcnow()).days
+        trial_end = getattr(user, "trial_end", None)
+        if trial_end:
+            if datetime.utcnow() < trial_end:
+                days_left = (trial_end - datetime.utcnow()).days
                 trial_info = f" | Trial: {days_left} days"
             else:
                 trial_info = " | Trial expired"

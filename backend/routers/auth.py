@@ -45,25 +45,26 @@ def _make_token(email: str) -> str:
 
 
 def _user_dict(user: User) -> dict:
-    # Calculate trial status
+    # Calculate trial status (safe access for legacy users without trial fields)
     now = datetime.utcnow()
     trial_active = False
     days_remaining = 0
+    trial_end = getattr(user, "trial_end", None)
     
-    if user.trial_end and now < user.trial_end:
+    if trial_end and now < trial_end:
         trial_active = True
-        days_remaining = max(0, (user.trial_end - now).days)
+        days_remaining = max(0, (trial_end - now).days)
     
     return {
         "id": user.email,
         "email": user.email,
         "name": user.name,
-        "plan": user.plan,
-        "payment_status": user.payment_status,
+        "plan": getattr(user, "plan", "free") or "free",
+        "payment_status": getattr(user, "payment_status", "free"),
         "trial": {
             "active": trial_active,
             "days_remaining": days_remaining,
-            "end": user.trial_end.isoformat() if user.trial_end else None
+            "end": trial_end.isoformat() if trial_end else None
         }
     }
 
