@@ -337,3 +337,85 @@ def debug_register(body: dict):
             "error": str(e),
             "type": type(e).__name__,
         }
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DATABASE MIGRATION ENDPOINTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.post("/migrate/add-trial-columns")
+def migrate_add_trial_columns(api_key: str = None):
+    """
+    One-time migration endpoint to add trial/payment columns to users table.
+    
+    Security: Requires API_KEY query parameter matching MIGRATION_API_KEY env var.
+    This prevents accidental/unauthorized access.
+    
+    Usage:
+        POST /migrate/add-trial-columns?api_key=YOUR_SECRET_KEY
+    """
+    
+    # Security check
+    required_key = os.getenv("MIGRATION_API_KEY", "")
+    if not required_key or api_key != required_key:
+        logger.warning(f"❌ Migration endpoint called with invalid/missing API key")
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Unauthorized", "detail": "Invalid API key"}
+        )
+    
+    try:
+        from database import engine
+        from sqlalchemy import text
+        
+        logger.info("🚀 Starting database migration: adding trial columns...")
+        
+        # SQL to add missing columns
+        migration_sql = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_start TIMESTAMP DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'free'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_id VARCHAR(255) DEFAULT NULL",
+        ]
+        
+        results = []
+        with engine.begin() as conn:
+            for sql in migration_sql:
+                try:
+                    conn.execute(text(sql))
+                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
+                    logger.info(f"✅ Added column: {col_name}")
+                    results.append({"column": col_name, "status": "added"})
+                except Exception as col_error:
+                    # Column might already exist, which is fine
+                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
+                    logger.info(f"ℹ️  Column {col_name} already exists or error: {str(col_error)}")
+                    results.append({"column": col_name, "status": "skipped", "reason": str(col_error)})
+        
+        # Verify migration by checking table structure
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        columns = [col['name'] for col in inspector.get_columns("users")]
+        
+        logger.info(f"✅ Migration completed. Users table now has {len(columns)} columns")
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Migration completed successfully",
+                "columns_processed": results,
+                "total_columns": len(columns),
+            }
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ Migration error: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Migration failed",
+                "detail": str(e),
+                "type": type(e).__name__,
+            }
+        )
