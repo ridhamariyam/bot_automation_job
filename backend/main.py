@@ -254,19 +254,19 @@ app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 # APP STARTUP - AUTO-MIGRATE DATABASE IF NEEDED
 # ═════════════════════════════════════════════════════════════════════════════
 
-@app.on_event("startup")
-async def startup_event():
+# RUN DATABASE SCHEMA CHECK & MIGRATION IMMEDIATELY
+def _ensure_database_schema():
     """
-    Auto-run database migrations on app startup.
-    Adds trial/payment columns if they don't exist yet.
+    Ensure all required columns exist in the users table.
+    Runs synchronously at module import time (before any requests).
     """
     try:
         from database import engine
         from sqlalchemy import text, inspect
         
-        logger.info("🔄 Checking database schema on startup...")
+        logger.info("🔄 [STARTUP] Checking database schema...")
         
-        # Check if columns exist
+        # Get existing columns
         inspector = inspect(engine)
         existing_columns = [col['name'] for col in inspector.get_columns("users")]
         
@@ -274,35 +274,62 @@ async def startup_event():
         missing_columns = [c for c in required_columns if c not in existing_columns]
         
         if not missing_columns:
-            logger.info("✅ All required columns exist")
-            return
+            logger.info("✅ [STARTUP] All required columns exist")
+            return True
         
-        logger.info(f"⚠️  Missing columns: {missing_columns}. Running migration...")
+        logger.info(f"❌ [STARTUP] Missing columns: {missing_columns}")
+        logger.info(f"🔧  [STARTUP] Adding missing columns...")
         
-        # SQL to add missing columns
-        migration_sql = [
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_start TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used INTEGER DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'free'",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_id VARCHAR(255) DEFAULT NULL",
-        ]
+        # SQL migration map
+        migrations = {
+            'trial_start': "ALTER TABLE users ADD COLUMN trial_start TIMESTAMP DEFAULT NULL",
+            'trial_end': "ALTER TABLE users ADD COLUMN trial_end TIMESTAMP DEFAULT NULL",
+            'trial_used': "ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0",
+            'payment_status': "ALTER TABLE users ADD COLUMN payment_status VARCHAR(50) DEFAULT 'free'",
+            'last_payment_id': "ALTER TABLE users ADD COLUMN last_payment_id VARCHAR(255) DEFAULT NULL",
+        }
         
+        # Execute migrations
         with engine.begin() as conn:
-            for sql in migration_sql:
+            for col, sql in migrations.items():
                 try:
                     conn.execute(text(sql))
-                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
-                    logger.info(f"✅ Migrated: {col_name}")
+                    logger.info(f"✅ [STARTUP] Created column: {col}")
                 except Exception as e:
-                    logger.debug(f"Column migration info: {str(e)}")
+                    if "already exists" in str(e).lower():
+                        logger.info(f"ℹ️  [STARTUP] Column exists: {col}")
+                    else:
+                        logger.error(f"❌ [STARTUP] Failed to create {col}: {e}")
+                        raise
         
-        logger.info("✅ Database migration completed")
+        # Verify all columns exist now
+        inspector = inspect(engine)
+        final_columns = [col['name'] for col in inspector.get_columns("users")]
+        still_missing = [c for c in required_columns if c not in final_columns]
+        
+        if still_missing:
+            logger.error(f"❌ [STARTUP] FAILED - Still missing: {still_missing}")
+            return False
+        
+        logger.info("✅ [STARTUP] Database schema is complete!")
+        return True
         
     except Exception as e:
-        logger.error(f"❌ Startup migration error: {str(e)}", exc_info=True)
-        # Don't fail startup if migration fails, just log it
-        pass
+        logger.error(f"❌ [STARTUP] Database check FAILED: {str(e)}", exc_info=True)
+        raise
+
+# EXECUTE STARTUP CHECK (runs before app accepts requests)
+logger.info("=" * 80)
+logger.info("🚀 JobRocket API - Starting up...")
+try:
+    if _ensure_database_schema():
+        logger.info("✅ Database ready - API will accept requests")
+    else:
+        logger.error("⚠️  Database schema check failed")
+except Exception as e:
+    logger.error(f"❌ CRITICAL: Database initialization failed - {e}")
+    # Still allow app to start but log the error
+logger.info("=" * 80)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK & DIAGNOSTIC ENDPOINTS
