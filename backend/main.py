@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from routers import profile, jobs, auth, bot, billing
+from routers import profile, jobs, auth, bot, billing, feedback
 
 load_dotenv()
 
@@ -249,6 +249,7 @@ app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
 app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
+app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # APP STARTUP - AUTO-MIGRATE DATABASE IF NEEDED

@@ -107,19 +107,20 @@ def register(body: RegisterIn):
         if db.get(User, body.email):
             raise HTTPException(400, "Email already registered")
         
-        # Create new user with 7-day premium trial
-        trial_start = datetime.utcnow()
-        trial_end = trial_start + timedelta(days=7)
+        # Create new user with FULL PREMIUM ACCESS (no payment required for now)
+        now = datetime.utcnow()
         
         user = User(
             email=body.email,
             name=body.name,
             hashed_pw=pwd_context.hash(body.password),
-            plan="premium",  # Default to premium during trial
-            trial_start=trial_start,
-            trial_end=trial_end,
+            plan="premium",  # Full access for all users
+            trial_start=now,
+            trial_end=now + timedelta(days=999),  # 999 days of access
             trial_used=1,
-            payment_status="trial"
+            payment_status="free",  # Mark as free (not paying)
+            usage_start=now,  # Track when user started using app
+            feedback_requested=0  # Haven't asked for feedback yet
         )
         db.add(user)
         db.commit()
@@ -130,10 +131,10 @@ def register(body: RegisterIn):
                 **_user_dict(user),
                 "trial": {
                     "active": True,
-                    "start": trial_start.isoformat(),
-                    "end": trial_end.isoformat(),
-                    "days_remaining": 7,
-                    "message": "You have 7 days of premium access. All platforms unlocked!"
+                    "start": now.isoformat(),
+                    "end": (now + timedelta(days=999)).isoformat(),
+                    "days_remaining": 999,
+                    "message": "✨ Full Premium Access! All platforms unlocked. Enjoy!"
                 }
             }
         }
@@ -145,6 +146,12 @@ def login(body: LoginIn):
         user = db.get(User, body.email)
         if not user or not pwd_context.verify(body.password, user.hashed_pw):
             raise HTTPException(401, "Invalid credentials")
+        
+        # Initialize usage_start if not set (for legacy users)
+        if not getattr(user, 'usage_start', None):
+            user.usage_start = datetime.utcnow()
+            db.commit()
+        
         return {"token": _make_token(user.email), "user": _user_dict(user)}
 
 

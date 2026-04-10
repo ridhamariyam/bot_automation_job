@@ -71,7 +71,7 @@ class User(Base):
     email               = Column(String, primary_key=True, index=True)
     name                = Column(String, nullable=False)
     hashed_pw           = Column(String, nullable=False)
-    plan                = Column(String, default="free")
+    plan                = Column(String, default="premium")  # Default to premium for now
     
     # Trial: 7-day premium trial for all new users
     trial_start         = Column(DateTime, nullable=True)
@@ -81,6 +81,10 @@ class User(Base):
     # Billing & Payment
     payment_status      = Column(String, default="trial")  # trial | active | expired | free
     last_payment_id     = Column(String, nullable=True)
+    
+    # Usage tracking
+    usage_start         = Column(DateTime, nullable=True)  # When user first started using the app
+    feedback_requested  = Column(Integer, default=0)  # 0 = not yet, 1 = requested/submitted
     
     # LinkedIn
     linkedin_email      = Column(String, nullable=True)
@@ -172,6 +176,15 @@ class Payment(Base):
     paddle_order_id = Column(String, nullable=True, unique=True)
     created_at      = Column(DateTime, nullable=False)
     completed_at    = Column(DateTime, nullable=True)
+
+
+class UserFeedback(Base):
+    __tablename__ = "user_feedback"
+    id              = Column(String, primary_key=True)  # Unique ID
+    user_email      = Column(String, nullable=False, index=True)
+    rating          = Column(Integer, nullable=False)  # 1-5 rating
+    suggestion      = Column(Text, nullable=True)  # User's suggestions/feedback
+    created_at      = Column(DateTime, nullable=False)
 
 
 def init_db():

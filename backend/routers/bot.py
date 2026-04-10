@@ -21,47 +21,14 @@ PYTHON     = Path(__file__).parent.parent / "venv" / "bin" / "python"
 def _get_user_access_info(user: User) -> tuple[str, str, bool]:
     """
     Returns (plan_name, message, has_access).
-    - has_access: True if user has active trial or paid subscription
-    - Automatically degrades users with expired trial to free plan
-    - Safely handles users without trial fields (legacy users)
+    
+    ⚡ FULL PREMIUM ACCESS ENABLED FOR ALL USERS
+    - All users get: All platforms, unlimited apps/day, full automation
+    - Payment system disabled temporarily
+    - No trial expiration
     """
-    now = datetime.utcnow()
-    
-    # Safe access to trial fields (may be None for legacy users)
-    trial_end = getattr(user, "trial_end", None)
-    payment_status = getattr(user, "payment_status", "free")
-    plan = getattr(user, "plan", "free") or "free"
-    
-    # Check if trial is active
-    if trial_end and now < trial_end:
-        days_left = (trial_end - now).days
-        msg = f"7-day trial active ({days_left} days remaining). All premium features unlocked."
-        return "premium", msg, True
-    
-    # Trial expired or not used
-    if trial_end and now >= trial_end and payment_status == "trial":
-        # Degrade to free
-        try:
-            with SessionLocal() as db:
-                db_user = db.get(User, user.email)
-                if db_user:
-                    db_user.plan = "free"
-                    db_user.payment_status = "expired"
-                    db.commit()
-        except Exception as e:
-            print(f"[bot] Failed to auto-degrade user {user.email}: {e}")
-        return "free", "Trial expired. Downgraded to free plan (5 apps/day). Upgrade to continue.", True
-    
-    # Check if they have an active paid subscription
-    if payment_status == "active" and plan in ["pro", "premium"]:
-        return plan, f"Active subscription: {PLAN_FEATURES[plan]['name']}", True
-    
-    # Free plan (default for legacy users without trial)
-    if plan == "free" or payment_status == "expired" or payment_status == "free":
-        return "free", "Free plan (5 apps/day). Upgrade to continue.", True
-    
-    # Default to free if no subscription
-    return "free", "Free trial ended. Please upgrade.", False
+    # Everyone gets premium access for now
+    return "premium", "✨ Premium Access Active | All platforms unlocked!", True
 
 
 class StartIn(BaseModel):
