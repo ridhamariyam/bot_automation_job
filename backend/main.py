@@ -271,7 +271,15 @@ def _ensure_database_schema():
         inspector = inspect(engine)
         existing_columns = [col['name'] for col in inspector.get_columns("users")]
         
-        required_columns = ['trial_start', 'trial_end', 'trial_used', 'payment_status', 'last_payment_id']
+        required_columns = [
+            'trial_start',
+            'trial_end',
+            'trial_used',
+            'payment_status',
+            'last_payment_id',
+            'usage_start',
+            'feedback_requested',
+        ]
         missing_columns = [c for c in required_columns if c not in existing_columns]
         
         if not missing_columns:
@@ -288,11 +296,14 @@ def _ensure_database_schema():
             'trial_used': "ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0",
             'payment_status': "ALTER TABLE users ADD COLUMN payment_status VARCHAR(50) DEFAULT 'free'",
             'last_payment_id': "ALTER TABLE users ADD COLUMN last_payment_id VARCHAR(255) DEFAULT NULL",
+            'usage_start': "ALTER TABLE users ADD COLUMN usage_start TIMESTAMP DEFAULT NULL",
+            'feedback_requested': "ALTER TABLE users ADD COLUMN feedback_requested INTEGER DEFAULT 0",
         }
         
         # Execute migrations
         with engine.begin() as conn:
-            for col, sql in migrations.items():
+            for col in missing_columns:
+                sql = migrations[col]
                 try:
                     conn.execute(text(sql))
                     logger.info(f"✅ [STARTUP] Created column: {col}")
@@ -427,7 +438,7 @@ def debug_register(body: dict):
 @app.post("/migrate/add-trial-columns")
 def migrate_add_trial_columns(api_key: str = None):
     """
-    One-time migration endpoint to add trial/payment columns to users table.
+    One-time migration endpoint to add missing users-table columns.
     
     Security: Accepts requests if:
     1. api_key matches MIGRATION_API_KEY env var, OR
@@ -451,7 +462,7 @@ def migrate_add_trial_columns(api_key: str = None):
         from database import engine
         from sqlalchemy import text
         
-        logger.info("🚀 Starting database migration: adding trial columns...")
+        logger.info("🚀 Starting database migration: adding missing users columns...")
         
         # SQL to add missing columns
         migration_sql = [
@@ -460,6 +471,8 @@ def migrate_add_trial_columns(api_key: str = None):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'free'",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_id VARCHAR(255) DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS usage_start TIMESTAMP DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS feedback_requested INTEGER DEFAULT 0",
         ]
         
         results = []

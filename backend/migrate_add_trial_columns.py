@@ -17,9 +17,9 @@ The script will:
 
 import os
 import sys
-from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text, inspect
 from dotenv import load_dotenv
+from database import init_db
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +31,10 @@ def get_database_url():
         print("❌ ERROR: DATABASE_URL environment variable not set")
         print("Set it in your .env file or Render dashboard")
         sys.exit(1)
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     return db_url
 
 def column_exists(inspector, table_name, column_name):
@@ -39,11 +43,13 @@ def column_exists(inspector, table_name, column_name):
     return column_name in columns
 
 def run_migration():
-    """Run the migration to add trial/payment columns."""
+    """Run the migration to add all required billing and feedback columns."""
     
     db_url = get_database_url()
     print(f"Connecting to database: {db_url.split('@')[1] if '@' in db_url else 'local'}")
     
+    # Ensure base tables exist before checking for additive columns.
+    init_db()
     engine = create_engine(db_url)
     
     # Get table inspector
@@ -67,6 +73,8 @@ def run_migration():
         ("trial_used", "INTEGER", "0"),
         ("payment_status", "VARCHAR(50)", "'free'"),
         ("last_payment_id", "VARCHAR(255)", "NULL"),
+        ("usage_start", "TIMESTAMP", "NULL"),
+        ("feedback_requested", "INTEGER", "0"),
     ]
     
     # Check which columns are missing
@@ -123,8 +131,8 @@ def run_migration():
     
     print(f"\n✅ Migration completed successfully!")
     print(f"✅ Database has {user_count} existing users")
-    print(f"✅ New users will auto-enroll in 7-day trial on registration")
-    print(f"✅ Existing users won't have trial fields set (graceful degradation)")
+    print("✅ New users will auto-enroll in the expected defaults on registration")
+    print("✅ Existing users can now use feedback tracking without UndefinedColumn errors")
     
     return True
 
