@@ -4,30 +4,36 @@ Feedback endpoint - collect user ratings and suggestions after 2 days of usage.
 import logging
 import uuid
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
 from jose import jwt, JWTError
 from database import SessionLocal, User, UserFeedback
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-security = HTTPBearer()
 
 SECRET_KEY = "change-me-in-production"
 ALGORITHM = "HS256"
 
 
-def _get_current_user_email(credentials: HTTPAuthCredentials) -> str:
-    """Extract email from JWT token."""
+def _get_current_user_email(authorization: str = Header(None)) -> str:
+    """Extract email from JWT token in Authorization header."""
+    if not authorization:
+        raise HTTPException(401, "Missing authorization header")
+    
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        # Extract token from "Bearer <token>"
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(401, "Invalid authorization header format")
+        
+        token = authorization.replace("Bearer ", "")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
         if not email:
             raise HTTPException(401, "Invalid token")
         return email
-    except JWTError:
-        raise HTTPException(401, "Invalid token")
+    except JWTError as e:
+        raise HTTPException(401, f"Invalid token: {str(e)}")
 
 
 class FeedbackIn(BaseModel):
@@ -43,7 +49,7 @@ class FeedbackStatus(BaseModel):
 
 
 @router.get("/feedback-status")
-def get_feedback_status(credentials: HTTPAuthCredentials = Depends(security)):
+def get_feedback_status(authorization: str = Header(None)):
     """
     Check if user is ready for feedback (has been using app for 2+ days).
     
@@ -53,7 +59,7 @@ def get_feedback_status(credentials: HTTPAuthCredentials = Depends(security)):
     - days_remaining: int - Days until feedback is requested (if < 2 days)
     - message: str - Human-readable status
     """
-    email = _get_current_user_email(credentials)
+    email = _get_current_user_email(authorization)
     
     with SessionLocal() as db:
         user = db.get(User, email)
@@ -91,14 +97,14 @@ def get_feedback_status(credentials: HTTPAuthCredentials = Depends(security)):
 
 
 @router.post("/submit-feedback")
-def submit_feedback(body: FeedbackIn, credentials: HTTPAuthCredentials = Depends(security)):
+def submit_feedback(body: FeedbackIn, authorization: str = Header(None)):
     """
     Submit user feedback (rating + suggestions).
     
     - rating: 1-5 stars
     - suggestion: Optional text (suggestions, bugs, feature requests, etc.)
     """
-    email = _get_current_user_email(credentials)
+    email = _get_current_user_email(authorization)
     
     # Validate rating
     if not isinstance(body.rating, int) or body.rating < 1 or body.rating > 5:
@@ -139,9 +145,9 @@ def submit_feedback(body: FeedbackIn, credentials: HTTPAuthCredentials = Depends
 
 
 @router.get("/my-feedback")
-def get_my_feedback(credentials: HTTPAuthCredentials = Depends(security)):
+def get_my_feedback(authorization: str = Header(None)):
     """Get user's own feedback history."""
-    email = _get_current_user_email(credentials)
+    email = _get_current_user_email(authorization)
     
     with SessionLocal() as db:
         feedbacks = db.query(UserFeedback).filter(
