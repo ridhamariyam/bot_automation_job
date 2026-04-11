@@ -25,14 +25,12 @@ RUN playwright install chromium && chmod -R 755 /playwright-browsers
 # Layer 3: Application code
 COPY backend/ ./backend/
 COPY bot/     ./bot/
+COPY docker-start.sh /docker-start.sh
 
 ENV PYTHONPATH=/app/backend:/app
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app/backend
 
-# Start script: run API + ARQ worker in same container
-CMD ["sh", "-c", "\
-  uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 & \
-  python -m arq workers.bot_worker.WorkerSettings & \
-  wait -n"]
+# Runs API + ARQ worker in same container (Render free plan has no background workers)
+CMD ["/docker-start.sh"]
