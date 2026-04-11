@@ -12,11 +12,13 @@ export default function RegisterPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [alreadyExists, setAlreadyExists] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
     setError("");
+    setAlreadyExists(false);
     setLoading(true);
     try {
       const res = await fetch(`${API}/api/auth/register`, {
@@ -25,7 +27,13 @@ export default function RegisterPage() {
         body: JSON.stringify({ name, email, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Registration failed");
+      if (!res.ok) {
+        const msg = data.error || data.detail || "Registration failed";
+        if (res.status === 400 && msg.toLowerCase().includes("already")) {
+          setAlreadyExists(true);
+        }
+        throw new Error(msg);
+      }
       localStorage.setItem("token", data.token);
       localStorage.setItem("jobrocket_user", JSON.stringify(data.user));
       router.push("/onboarding");
@@ -67,6 +75,13 @@ export default function RegisterPage() {
           {error && (
             <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400 text-center">
               {error}
+              {alreadyExists && (
+                <div className="mt-1.5">
+                  <Link href="/login" className="text-indigo-400 hover:text-indigo-300 underline transition">
+                    Log in instead →
+                  </Link>
+                </div>
+              )}
             </div>
           )}
 

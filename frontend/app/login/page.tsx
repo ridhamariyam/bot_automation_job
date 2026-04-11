@@ -24,7 +24,7 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Invalid credentials");
+      if (!res.ok) throw new Error(data.error || data.detail || "Invalid credentials");
       localStorage.setItem("token", data.token);
       localStorage.setItem("jobrocket_user", JSON.stringify(data.user));
       router.push("/dashboard");
@@ -143,7 +143,7 @@ function ForgotPassword({ onBack }: { onBack: () => void }) {
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.detail || "Failed to send reset email");
+        throw new Error(data.error || data.detail || "Failed to send reset email");
       }
       setSent(true);
     } catch (err: unknown) {
