@@ -1,12 +1,12 @@
 services:
   # ── API / Web ──────────────────────────────────────────────────────────────
+  # Pre-built image from Docker Hub — no pipeline minutes consumed.
+  # To redeploy: docker build + push, then "Manual Deploy" in Render dashboard
+  # or trigger via: curl -X POST $RENDER_DEPLOY_HOOK_URL
   - type: web
     name: jobrocket-backend
-    runtime: python
-    rootDir: backend
-    # WeasyPrint needs libpango/libcairo — installed via system packages, not playwright
-    buildCommand: pip install --prefer-binary -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    image:
+      url: docker.io/ridhamariyam/jobrocket-backend:latest
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -57,14 +57,13 @@ services:
       - key: TWILIO_AUTH_TOKEN
         sync: false
       - key: TWILIO_WHATSAPP_FROM
-        value: "whatsapp:+14155238886"   # Twilio sandbox default; change in prod
+        value: "whatsapp:+14155238886"
 
   # ── ARQ Bot Worker ─────────────────────────────────────────────────────────
   - type: worker
     name: jobrocket-bot-worker
-    runtime: docker
-    dockerfilePath: ./Dockerfile.worker
-    # Docker caches pip + Chromium layers — only app code layer re-runs on deploy
+    image:
+      url: docker.io/ridhamariyam/jobrocket-worker:latest
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -97,4 +96,3 @@ services:
         value: "whatsapp:+14155238886"
       - key: BOT_API_URL
         value: https://jobrocket-backend.onrender.com
-
