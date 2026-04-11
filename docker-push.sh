@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-DOCKER_USER="ridhamariyam"
+DOCKER_USER="ridhamaryam"
 BACKEND_IMAGE="$DOCKER_USER/jobrocket-backend:latest"
 WORKER_IMAGE="$DOCKER_USER/jobrocket-worker:latest"
 

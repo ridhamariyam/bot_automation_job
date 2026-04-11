@@ -138,13 +138,15 @@ async def _enqueue_arq(user_email: str, platforms: list[str], max_jobs: int) -> 
     """Enqueue bot tasks in ARQ/Redis queue — one task per platform."""
     try:
         from arq.connections import create_pool, RedisSettings
+        from urllib.parse import urlparse as _urlparse
 
-        # Parse redis URL
-        m = re.match(r"redis://(?::(.+)@)?([^:/]+):(\d+)", REDIS_URL or "")
+        # Parse Redis URL — handles redis:// and rediss:// (TLS) with any auth format
+        _p = _urlparse(REDIS_URL or "")
         settings = RedisSettings(
-            host     = m.group(2) if m else "localhost",
-            port     = int(m.group(3)) if m else 6379,
-            password = m.group(1) if m and m.group(1) else None,
+            host     = _p.hostname or "localhost",
+            port     = _p.port or 6379,
+            password = _p.password or None,
+            ssl      = (_p.scheme == "rediss"),
         )
         redis = await create_pool(settings)
 
@@ -212,12 +214,14 @@ async def stop_bot(email: str):
     if REDIS_URL:
         try:
             from arq.connections import create_pool, RedisSettings
+            from urllib.parse import urlparse as _urlparse
             from database import ALL_PLATFORMS
-            m2 = re.match(r"redis://(?::(.+)@)?([^:/]+):(\d+)", REDIS_URL)
+            _p2 = _urlparse(REDIS_URL)
             redis = await create_pool(RedisSettings(
-                host     = m2.group(2) if m2 else "localhost",
-                port     = int(m2.group(3)) if m2 else 6379,
-                password = m2.group(1) if m2 and m2.group(1) else None,
+                host     = _p2.hostname or "localhost",
+                port     = _p2.port or 6379,
+                password = _p2.password or None,
+                ssl      = (_p2.scheme == "rediss"),
             ))
             for platform in ALL_PLATFORMS:
                 try:

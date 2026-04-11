@@ -16,12 +16,15 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 # Layer 2: Playwright browser (cached until pip layer changes)
-RUN playwright install chromium
+# Set a world-readable path so any user can run the browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/playwright-browsers
+RUN playwright install chromium && chmod -R 755 /playwright-browsers
 
 # Layer 3: application code
 COPY backend/ ./backend/
 COPY bot/     ./bot/
 
 ENV PYTHONPATH=/app/backend:/app
+ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-m", "arq", "workers.bot_worker.WorkerSettings"]
