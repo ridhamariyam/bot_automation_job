@@ -50,20 +50,12 @@ def _make_token(email: str) -> str:
 
 
 def _user_dict(user: User) -> dict:
-    now = datetime.utcnow()
-    trial_end = getattr(user, "trial_end", None)
-    trial_active = bool(trial_end and now < trial_end)
-    days_left    = max(0, (trial_end - now).days) if trial_active else 0
     return {
         "email": user.email,
         "name": user.name,
-        "plan": getattr(user, "plan", "free") or "free",
-        "payment_status": getattr(user, "payment_status", "free"),
-        "trial": {
-            "active": trial_active,
-            "days_remaining": days_left,
-            "end": trial_end.isoformat() if trial_end else None,
-        },
+        "plan": "premium",   # all users have full access
+        "payment_status": "active",
+        "trial": {"active": False, "days_remaining": 0, "end": None},
     }
 
 

@@ -62,7 +62,7 @@ class LogIn(BaseModel):
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _get_verified_platforms(user: User, db) -> list[str]:
     """Return list of platforms with verified credentials."""
-    plan_platforms = PLAN_FEATURES.get(user.plan or "premium", PLAN_FEATURES["premium"])["platforms"]
+    plan_platforms = PLAN_FEATURES["premium"]["platforms"]  # all users have full access
 
     verified = []
     # Check new PlatformCredential table first
@@ -84,7 +84,7 @@ def _get_verified_platforms(user: User, db) -> list[str]:
 
 def _check_daily_limit(user_email: str, plan: str, db) -> tuple[int, int, int]:
     """Returns (today_count, max_daily, remaining)."""
-    plan_config = PLAN_FEATURES.get(plan, PLAN_FEATURES["premium"])
+    plan_config = PLAN_FEATURES["premium"]  # all users have full access
     max_daily   = plan_config["max_apps_per_day"]
     today       = date.today()
     today_count = db.query(func.count(JobApplication.id)).filter(
@@ -110,7 +110,7 @@ async def start_bot(body: StartIn):
             )
 
         today_count, max_daily, remaining = _check_daily_limit(
-            body.email, user.plan or "premium", db
+            body.email, "premium", db
         )
         if remaining <= 0:
             raise HTTPException(
@@ -156,8 +156,7 @@ async def _enqueue_arq(user_email: str, platforms: list[str], max_jobs: int) -> 
                 user_email  = user_email,
                 platform    = platform,
                 max_jobs    = per_platform,
-                _job_id     = f"{user_email}:{platform}",   # dedup key
-                _dedupe_time = 60,                           # ignore duplicate within 60s
+                _job_id     = f"{user_email}:{platform}",   # dedup key — ARQ skips if job_id already queued
             )
             job_ids.append(job.job_id if job else f"{user_email}:{platform}")
 
@@ -387,9 +386,7 @@ def get_platforms(email: str):
         if not user:
             raise HTTPException(404, "User not found")
 
-        plan_platforms = PLAN_FEATURES.get(
-            user.plan or "premium", PLAN_FEATURES["premium"]
-        )["platforms"]
+        plan_platforms = PLAN_FEATURES["premium"]["platforms"]  # all users have full access
 
         creds = {c.platform: c for c in db.query(PlatformCredential).filter_by(user_email=email).all()}
 
@@ -412,7 +409,7 @@ def get_platforms(email: str):
 
         return {
             "email":          email,
-            "plan":           user.plan or "premium",
+            "plan":           "premium",
             "platforms":      platforms_out,
             "verified_count": sum(1 for p in platforms_out if p["verified"]),
         }

@@ -63,19 +63,9 @@ def get_user_plan(email: str):
         if not user:
             raise HTTPException(404, "User not found")
         
-        plan_id = getattr(user, "plan", None) or "free"
-        plan = PLAN_FEATURES.get(plan_id, PLAN_FEATURES["free"])
-        
-        # Calculate trial info (safe access for legacy users)
-        now = datetime.utcnow()
-        trial_active = False
-        trial_days_remaining = 0
-        trial_end = getattr(user, "trial_end", None)
-        
-        if trial_end and now < trial_end:
-            trial_active = True
-            trial_days_remaining = (trial_end - now).days + 1
-        
+        plan_id = "premium"  # all users have full access
+        plan = PLAN_FEATURES["premium"]
+
         return {
             "plan": plan_id,
             "name": plan["name"],
@@ -83,12 +73,8 @@ def get_user_plan(email: str):
             "max_apps_per_day": plan["max_apps_per_day"],
             "price": plan["price_display"],
             "type": plan["type"],
-            "trial": {
-                "active": trial_active,
-                "days_remaining": trial_days_remaining,
-                "end_date": trial_end.isoformat() if trial_end else None,
-            },
-            "payment_status": getattr(user, "payment_status", "free"),
+            "trial": {"active": False, "days_remaining": 0, "end_date": None},
+            "payment_status": "active",
         }
 
 
@@ -100,41 +86,26 @@ def get_trial_status(email: str):
         if not user:
             raise HTTPException(404, "User not found")
         
-        now = datetime.utcnow()
-        trial_active = False
-        trial_days_remaining = 0
-        trial_end_date = None
-        trial_end = getattr(user, "trial_end", None)
-        plan = getattr(user, "plan", None) or "free"
-        payment_status = getattr(user, "payment_status", "free")
-        
-        if trial_end and now < trial_end:
-            trial_active = True
-            trial_days_remaining = (trial_end - now).days + 1
-            trial_end_date = trial_end.isoformat()
-        
+        plan = "premium"  # all users have full access
+
         return {
             "email": email,
             "plan": plan,
-            "payment_status": payment_status,
+            "payment_status": "active",
             "trial": {
-                "active": trial_active,
-                "days_remaining": trial_days_remaining,
-                "end_date": trial_end_date,
-                "message": (
-                    f"7-day premium trial active! {trial_days_remaining} days remaining. All features unlocked."
-                    if trial_active
-                    else "Trial expired. Please upgrade to continue using premium features."
-                ),
+                "active": False,
+                "days_remaining": 0,
+                "end_date": None,
+                "message": "All features unlocked.",
             },
             "platforms": {
                 "free": PLAN_FEATURES["free"]["platforms"],
                 "pro": PLAN_FEATURES["pro"]["platforms"],
                 "premium": PLAN_FEATURES["premium"]["platforms"],
-                "available_for_user": PLAN_FEATURES[plan]["platforms"],
+                "available_for_user": PLAN_FEATURES["premium"]["platforms"],
             },
-            "max_apps_per_day": PLAN_FEATURES[plan]["max_apps_per_day"],
-            "upgrade_required": trial_active is False and payment_status == "expired",
+            "max_apps_per_day": PLAN_FEATURES["premium"]["max_apps_per_day"],
+            "upgrade_required": False,
         }
 
 
@@ -275,7 +246,7 @@ def get_payment_status(email: str):
         ).order_by(Payment.created_at.desc()).first()
         
         return {
-            "current_plan": user.plan or "free",
+            "current_plan": "premium",
             "latest_payment": {
                 "id": latest_payment.id,
                 "plan": latest_payment.plan_id,
@@ -290,36 +261,36 @@ def get_payment_status(email: str):
 def _verify_paddle_signature_v3(body: bytes, signature: str) -> bool:
     """
     Verify Paddle v3 webhook signature.
-    Paddle v3 uses: ts;signature format where signature is HMAC SHA256
+    Header format: Paddle-Signature: ts=1671552777;h1=eb4d2b...
+    Signed payload:  {timestamp}:{raw_body}
     """
     if not PADDLE_WEBHOOK_SECRET or not signature:
         print("Missing webhook secret or signature")
         return False
-    
+
     try:
-        # Paddle v3 signature format: ts;signature
-        parts = signature.rsplit(";", 1)
-        if len(parts) != 2:
-            print("Invalid signature format")
+        # Parse "ts=1671552777;h1=eb4d2b..."
+        parts = dict(part.split("=", 1) for part in signature.split(";") if "=" in part)
+        ts_value  = parts.get("ts", "")
+        sig_value = parts.get("h1", "")
+
+        if not ts_value or not sig_value:
+            print("Invalid Paddle-Signature header format")
             return False
-        
-        ts, sig = parts
-        
-        # Create the data to verify: ts + request body
-        data_to_verify = f"{ts}{body.decode('utf-8')}"
-        
-        # Compute HMAC-SHA256
+
+        # Paddle signed payload: "{ts}:{raw_body}"
+        data_to_verify = f"{ts_value}:{body.decode('utf-8')}"
+
         expected_sig = hmac.new(
             PADDLE_WEBHOOK_SECRET.encode(),
             data_to_verify.encode(),
-            hashlib.sha256
+            hashlib.sha256,
         ).hexdigest()
-        
-        # Compare signatures (constant time comparison)
-        result = hmac.compare_digest(sig, expected_sig)
-        print(f"Signature verification: {result}")
+
+        result = hmac.compare_digest(sig_value, expected_sig)
+        print(f"Paddle signature verification: {result}")
         return result
-    
+
     except Exception as e:
         print(f"Signature verification error: {e}")
         return False
@@ -428,18 +399,17 @@ def check_feature_access(email: str, platform: str = None):
         if not user:
             raise HTTPException(404, "User not found")
         
-        plan = PLAN_FEATURES.get(user.plan or "free", PLAN_FEATURES["free"])
-        
+        plan = PLAN_FEATURES["premium"]   # all users have full access
+
         if platform:
-            has_access = platform in plan["platforms"]
             return {
-                "has_access": has_access,
+                "has_access": True,
                 "platform": platform,
-                "current_plan": user.plan or "free",
+                "current_plan": "premium",
             }
-        
+
         return {
-            "plan": user.plan or "free",
+            "plan": "premium",
             "allowed_platforms": plan["platforms"],
             "max_apps_per_day": plan["max_apps_per_day"],
         }

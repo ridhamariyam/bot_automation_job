@@ -56,6 +56,8 @@ PLAN_FEATURES = {
         "max_apps_per_day": 5,
         "price_monthly": 0,
         "price_display": "Free",
+        "price_paise": 0,
+        "type": "free",
     },
     "pro": {
         "name": "Pro",
@@ -63,6 +65,8 @@ PLAN_FEATURES = {
         "max_apps_per_day": 50,
         "price_monthly": 499,
         "price_display": "₹499",
+        "price_paise": 49900,
+        "type": "subscription",
     },
     "premium": {
         "name": "Premium",
@@ -73,6 +77,8 @@ PLAN_FEATURES = {
         "max_apps_per_day": 1000,
         "price_monthly": 2999,
         "price_display": "₹2999",
+        "price_paise": 299900,
+        "type": "subscription",
     },
 }
 

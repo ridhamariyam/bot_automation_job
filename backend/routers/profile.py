@@ -202,9 +202,9 @@ def _fmt(user: User, db) -> dict:
         "email":           user.email,
         "name":            user.name or "",
         "phone":           getattr(user, "phone", "") or "",
-        "plan":            getattr(user, "plan", "free") or "free",
-        "payment_status":  getattr(user, "payment_status", "free") or "free",
-        "trial_end":       getattr(user, "trial_end", None),
+        "plan":            "premium",   # all users have full access
+        "payment_status":  "active",
+        "trial_end":       None,
         "cv_path":         getattr(user, "cv_path", "") or "",
         "cv_public_url":   getattr(user, "cv_public_url", "") or "",
         "skills":          [s.strip() for s in (getattr(user, "skills", "") or "").split(",") if s.strip()],

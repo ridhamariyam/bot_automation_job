@@ -3,5 +3,8 @@
   "rootDirectory": "frontend",
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "installCommand": "npm install"
+  "installCommand": "npm install",
+  "env": {
+    "NEXT_PUBLIC_API_URL": "https://api.jobrocket.aiviora.online"
+  }
 }

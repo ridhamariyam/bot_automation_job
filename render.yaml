@@ -6,7 +6,7 @@ services:
     rootDir: backend
     # playwright --with-deps installs libpango, libcairo, libfontconfig — WeasyPrint uses these too
     buildCommand: pip install --prefer-binary -r requirements.txt && playwright install chromium --with-deps
-    startCommand: python migrate_add_trial_columns.py && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -34,15 +34,15 @@ services:
         sync: false
       # Paddle
       - key: PADDLE_SANDBOX
-        value: "true"
+        value: "false"
       - key: PADDLE_API_KEY
         sync: false
       - key: PADDLE_WEBHOOK_SECRET
         sync: false
       - key: PADDLE_PRICE_PRO
-        value: pri_01kkvt1e6x9fqss5g8kmeej4pz
+        value: pri_01knn4f6079a1nvpzzmf0g686m
       - key: PADDLE_PRICE_PREMIUM
-        value: pri_01kkvt1en449pt4vgw3mv50ca2
+        value: pri_01knn4g3kd8nzzqz6f66vvahtc
       # URLs
       - key: FRONTEND_URL
         value: https://jobrocket.aiviora.online
