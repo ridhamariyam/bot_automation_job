@@ -253,7 +253,7 @@ export default function BillingPage() {
       {/* Header */}
       <nav className="bg-white border-b border-gray-200 h-16 flex items-center px-6">
         <Link href="/dashboard" className="text-xl font-bold text-indigo-600">
-          JobRocket<span className="text-gray-900">.ai</span>
+          JobRocket
         </Link>
       </nav>
 

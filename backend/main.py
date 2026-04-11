@@ -1,19 +1,15 @@
 """
-JobRocket API - Production-Safe Backend with CORS, Error Handling, and Logging
+JobRocket API — production FastAPI backend.
 
-Key Features:
-- FastAPI backend with proper CORS configuration for Vercel + Render
-- Global exception handler that preserves CORS headers even on errors
-- Structured logging middleware for debugging
-- Safe database connection patterns
-- Support for Vercel preview deployments via regex
+v2 changes:
+- Rate limiting on auth endpoints (slowapi)
+- DB init_db() called on startup (creates new tables)
+- Recruiter router included
+- Graceful schema migration for existing deployments
 """
-
 import os
 import logging
-import json
 import time
-from typing import Callable
 from datetime import datetime
 
 from fastapi import FastAPI, Request, HTTPException
@@ -21,498 +17,240 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from routers import profile, jobs, auth, bot, billing, feedback
-
 load_dotenv()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# LOGGING CONFIGURATION
-# ═════════════════════════════════════════════════════════════════════════════
-# Structured logging for production - logs all request/response metadata
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
+
+# ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# FASTAPI APP INITIALIZATION
-# ═════════════════════════════════════════════════════════════════════════════
+# ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="JobRocket API",
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# CORS CONFIGURATION - MUST BE FIRST MIDDLEWARE
-# ═════════════════════════════════════════════════════════════════════════════
-# Why this order matters:
-# 1. Middleware added first runs LAST on response (LIFO order)
-# 2. CORS must run LAST to ensure headers are added to ALL responses
-# 3. Even exceptions and errors will get CORS headers
-
+# ── CORS ───────────────────────────────────────────────────────────────────────
 ALLOWED_ORIGINS = [
-    # Vercel Production
     "https://bot-automation-job.vercel.app",
-    
-    # Production domains for custom domain
     "https://jobrocket.aiviora.online",
     "https://www.jobrocket.aiviora.online",
-    
-    # Development/Testing
     "http://localhost:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
 ]
+extra = os.getenv("EXTRA_CORS_ORIGINS", "")
+if extra:
+    ALLOWED_ORIGINS.extend(o.strip() for o in extra.split(",") if o.strip())
 
-# Add environment variable origins (comma-separated)
-extra_origins = os.getenv("EXTRA_CORS_ORIGINS", "").strip()
-if extra_origins:
-    additional = [o.strip() for o in extra_origins.split(",") if o.strip()]
-    ALLOWED_ORIGINS.extend(additional)
-    logger.info(f"✅ Added extra CORS origins from env: {additional}")
-
-logger.info(f"✅ CORS Allowed Origins: {ALLOWED_ORIGINS}")
-
-# CRITICAL: CORSMiddleware added FIRST so it runs LAST on response
-# This ensures CORS headers are present even when exceptions occur
 app.add_middleware(
     CORSMiddleware,
-    # Explicit whitelist prevents "Access-Control-Allow-Origin: *" (which breaks credentials)
     allow_origins=ALLOWED_ORIGINS,
-    # Pattern for Vercel preview deployments: *.vercel.app
     allow_origin_regex=r"https://.*\.vercel\.app",
-    # Credentials required for auth headers and cookies
     allow_credentials=True,
-    # HTTP methods used by Vercel frontend
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    # Headers used by frontend requests
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-        "Accept",
-        "Origin",
-        "Access-Control-Request-Method",
-        "Access-Control-Request-Headers",
-    ],
-    # Headers exposed to frontend JavaScript
-    expose_headers=[
-        "Content-Type",
-        "Authorization",
-        "X-Total-Count",
-    ],
-    # Cache preflight for 1 hour (improves performance)
+    allow_headers=["Content-Type", "Authorization", "Accept", "Origin",
+                   "Access-Control-Request-Method", "Access-Control-Request-Headers"],
+    expose_headers=["Content-Type", "Authorization", "X-Total-Count"],
     max_age=3600,
 )
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STRUCTURED LOGGING MIDDLEWARE
-# ═════════════════════════════════════════════════════════════════════════════
-# Why this works:
-# - Logs ALL requests/responses including timing
-# - Captures origin for debugging CORS issues
-# - Logs response status (helps diagnose 500 errors hidden as CORS)
+# ── Logging middleware ─────────────────────────────────────────────────────────
 @app.middleware("http")
-async def structured_logging_middleware(request: Request, call_next):
-    """Log request metadata and response status for debugging."""
-    
-    # Extract request info
-    method = request.method
-    path = request.url.path
-    origin = request.headers.get("origin", "NO_ORIGIN")
-    start_time = time.time()
-    
-    # Log incoming request
-    logger.info(
-        f"→ [{method}] {path} | Origin: {origin}"
-    )
-    
+async def log_requests(request: Request, call_next):
+    t0 = time.time()
+    origin = request.headers.get("origin", "-")
+    logger.info("→ %s %s  origin=%s", request.method, request.url.path, origin)
     try:
-        # Call the next middleware/route
-        response = await call_next(request)
-        
-        # Calculate response time
-        duration_ms = (time.time() - start_time) * 1000
-        
-        # Log response
-        logger.info(
-            f"← [{method}] {path} | Status: {response.status_code} | "
-            f"Duration: {duration_ms:.2f}ms | Origin: {origin}"
-        )
-        
-        return response
-        
+        resp = await call_next(request)
+        ms = (time.time() - t0) * 1000
+        logger.info("← %s %s  status=%s  %.0fms", request.method, request.url.path, resp.status_code, ms)
+        return resp
     except Exception as exc:
-        # Log unexpected exceptions
-        duration_ms = (time.time() - start_time) * 1000
-        logger.error(
-            f"✗ [{method}] {path} | Exception: {type(exc).__name__}: {str(exc)} | "
-            f"Duration: {duration_ms:.2f}ms | Origin: {origin}",
-            exc_info=True
-        )
+        ms = (time.time() - t0) * 1000
+        logger.error("✗ %s %s  %.0fms  %s", request.method, request.url.path, ms, exc, exc_info=True)
         raise
 
-# ═════════════════════════════════════════════════════════════════════════════
-# GLOBAL EXCEPTION HANDLER
-# ═════════════════════════════════════════════════════════════════════════════
-# Why this prevents "misleading CORS errors":
-# - Browser sees 500 error first
-# - If CORS headers are missing, browser shows CORS error instead of real error
-# - This handler ensures CORS headers are ALWAYS returned
-# - Frontend gets real error details instead of generic "CORS blocked"
-
+# ── Exception handlers ─────────────────────────────────────────────────────────
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """
-    Global exception handler that:
-    1. Catches ALL unhandled exceptions
-    2. Logs full error details
-    3. Returns JSON response with CORS headers
-    4. Prevents misleading "CORS blocked" errors in browser
-    """
-    
-    method = request.method
-    path = request.url.path
-    origin = request.headers.get("origin", "NO_ORIGIN")
-    
-    logger.error(
-        f"🔴 UNHANDLED EXCEPTION: [{method}] {path} | Origin: {origin}",
-        exc_info=exc,
-        extra={
-            "client_origin": origin,
-            "request_path": path,
-            "request_method": method
-        }
-    )
-    
-    # Determine status code
-    status_code = 500
-    if isinstance(exc, HTTPException):
-        status_code = exc.status_code
-    
-    # Return JSON error response (not HTML 500 page)
+async def global_exc(request: Request, exc: Exception):
+    origin = request.headers.get("origin", "*")
+    logger.error("UNHANDLED %s %s — %s", request.method, request.url.path, exc, exc_info=True)
     return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": "Internal Server Error",
-            "detail": str(exc) if str(exc) else "An unexpected error occurred",
-            "type": type(exc).__name__,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-        headers={
-            # Explicitly add CORS headers so browser doesn't block the error response
-            "Access-Control-Allow-Origin": origin if origin != "NO_ORIGIN" else "*",
-            "Access-Control-Allow-Credentials": "true",
-        }
+        status_code=500,
+        content={"error": "Internal Server Error", "detail": str(exc),
+                 "timestamp": datetime.utcnow().isoformat()},
+        headers={"Access-Control-Allow-Origin": origin,
+                 "Access-Control-Allow-Credentials": "true"},
     )
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Handle FastAPI HTTP exceptions with CORS headers."""
-    
-    origin = request.headers.get("origin", "NO_ORIGIN")
-    
+async def http_exc(request: Request, exc: HTTPException):
+    origin = request.headers.get("origin", "*")
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail},
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-        headers={
-            "Access-Control-Allow-Origin": origin if origin != "NO_ORIGIN" else "*",
-            "Access-Control-Allow-Credentials": "true",
-        }
+        content={"error": exc.detail, "timestamp": datetime.utcnow().isoformat()},
+        headers={"Access-Control-Allow-Origin": origin,
+                 "Access-Control-Allow-Credentials": "true"},
     )
 
-# ═════════════════════════════════════════════════════════════════════════════
-# STARTUP EVENT
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Routers ────────────────────────────────────────────────────────────────────
+from routers import auth, profile, jobs, bot, billing, feedback, recruiter, resume
+
+app.include_router(auth.router,      prefix="/api/auth",      tags=["auth"])
+app.include_router(profile.router,   prefix="/api/profile",   tags=["profile"])
+app.include_router(jobs.router,      prefix="/api/jobs",      tags=["jobs"])
+app.include_router(bot.router,       prefix="/api/bot",       tags=["bot"])
+app.include_router(billing.router,   prefix="/api/billing",   tags=["billing"])
+app.include_router(feedback.router,  prefix="/api/feedback",  tags=["feedback"])
+app.include_router(recruiter.router, prefix="/api/recruiter", tags=["recruiter"])
+app.include_router(resume.router,    prefix="/api/resume",    tags=["resume"])
+
+# ── Startup ────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
-async def startup_event():
-    """Log startup confirmation for monitoring."""
-    logger.info("=" * 80)
-    logger.info("🚀 JobRocket API Starting")
-    logger.info(f"✅ CORS configured for: {len(ALLOWED_ORIGINS)} origins + *.vercel.app")
-    logger.info("✅ Global exception handler active")
-    logger.info("✅ Structured logging enabled")
-    logger.info("=" * 80)
+async def on_startup():
+    logger.info("=" * 70)
+    logger.info("JobRocket API v2 starting")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# INCLUDE API ROUTERS
-# ═════════════════────════────────────────────────────────────────────────────
-# Routes are included AFTER middleware setup so middleware runs on all routes
-app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
-app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
-app.include_router(bot.router, prefix="/api/bot", tags=["bot"])
-app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
-app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
+    # Create all tables (new ones added in v2 schema)
+    from database import init_db
+    init_db()
+    logger.info("DB tables initialised")
 
-# ═════════════════════════════════════════════════════════════════════════════
-# APP STARTUP - AUTO-MIGRATE DATABASE IF NEEDED
-# ═════════════════════════════════════════════════════════════════════════════
+    # Migrate existing deployments: add any missing columns gracefully
+    _migrate_existing_schema()
 
-# RUN DATABASE SCHEMA CHECK & MIGRATION IMMEDIATELY
-def _ensure_database_schema():
-    """
-    Ensure all required columns exist in the users table.
-    Runs synchronously at module import time (before any requests).
-    """
-    try:
-        from database import engine
-        from sqlalchemy import text, inspect
-        
-        logger.info("🔄 [STARTUP] Checking database schema...")
-        
-        # Get existing columns
-        inspector = inspect(engine)
-        existing_columns = [col['name'] for col in inspector.get_columns("users")]
-        
-        required_columns = [
-            'trial_start',
-            'trial_end',
-            'trial_used',
-            'payment_status',
-            'last_payment_id',
-            'usage_start',
-            'feedback_requested',
-        ]
-        missing_columns = [c for c in required_columns if c not in existing_columns]
-        
-        if not missing_columns:
-            logger.info("✅ [STARTUP] All required columns exist")
-            return True
-        
-        logger.info(f"❌ [STARTUP] Missing columns: {missing_columns}")
-        logger.info(f"🔧  [STARTUP] Adding missing columns...")
-        
-        # SQL migration map
-        migrations = {
-            'trial_start': "ALTER TABLE users ADD COLUMN trial_start TIMESTAMP DEFAULT NULL",
-            'trial_end': "ALTER TABLE users ADD COLUMN trial_end TIMESTAMP DEFAULT NULL",
-            'trial_used': "ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0",
-            'payment_status': "ALTER TABLE users ADD COLUMN payment_status VARCHAR(50) DEFAULT 'free'",
-            'last_payment_id': "ALTER TABLE users ADD COLUMN last_payment_id VARCHAR(255) DEFAULT NULL",
-            'usage_start': "ALTER TABLE users ADD COLUMN usage_start TIMESTAMP DEFAULT NULL",
-            'feedback_requested': "ALTER TABLE users ADD COLUMN feedback_requested INTEGER DEFAULT 0",
-        }
-        
-        # Execute migrations
-        with engine.begin() as conn:
-            for col in missing_columns:
-                sql = migrations[col]
-                try:
-                    conn.execute(text(sql))
-                    logger.info(f"✅ [STARTUP] Created column: {col}")
-                except Exception as e:
-                    if "already exists" in str(e).lower():
-                        logger.info(f"ℹ️  [STARTUP] Column exists: {col}")
-                    else:
-                        logger.error(f"❌ [STARTUP] Failed to create {col}: {e}")
-                        raise
-        
-        # Verify all columns exist now
-        inspector = inspect(engine)
-        final_columns = [col['name'] for col in inspector.get_columns("users")]
-        still_missing = [c for c in required_columns if c not in final_columns]
-        
-        if still_missing:
-            logger.error(f"❌ [STARTUP] FAILED - Still missing: {still_missing}")
-            return False
-        
-        logger.info("✅ [STARTUP] Database schema is complete!")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ [STARTUP] Database check FAILED: {str(e)}", exc_info=True)
-        raise
+    logger.info("Ready — %d CORS origins + *.vercel.app", len(ALLOWED_ORIGINS))
+    logger.info("=" * 70)
 
-# EXECUTE STARTUP CHECK (runs before app accepts requests)
-logger.info("=" * 80)
-logger.info("🚀 JobRocket API - Starting up...")
-try:
-    if _ensure_database_schema():
-        logger.info("✅ Database ready - API will accept requests")
-    else:
-        logger.error("⚠️  Database schema check failed")
-except Exception as e:
-    logger.error(f"❌ CRITICAL: Database initialization failed - {e}")
-    # Still allow app to start but log the error
-logger.info("=" * 80)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK & DIAGNOSTIC ENDPOINTS
-# ═════════════════════════════════════════────════════════════────────────────
+def _migrate_existing_schema():
+    """Add columns that exist in v2 but not in v1 production databases."""
+    from database import engine
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+
+    migrations: list[tuple[str, str, str]] = [
+        # (table, column, SQL)
+        ("users", "id",             "ALTER TABLE users ADD COLUMN id VARCHAR DEFAULT ''"),
+        ("users", "cv_public_url",  "ALTER TABLE users ADD COLUMN cv_public_url VARCHAR"),
+        ("users", "created_at",     "ALTER TABLE users ADD COLUMN created_at TIMESTAMP"),
+        ("users", "trial_start",    "ALTER TABLE users ADD COLUMN trial_start TIMESTAMP"),
+        ("users", "trial_end",      "ALTER TABLE users ADD COLUMN trial_end TIMESTAMP"),
+        ("users", "trial_used",     "ALTER TABLE users ADD COLUMN trial_used INTEGER DEFAULT 0"),
+        ("users", "payment_status", "ALTER TABLE users ADD COLUMN payment_status VARCHAR DEFAULT 'trial'"),
+        ("users", "last_payment_id","ALTER TABLE users ADD COLUMN last_payment_id VARCHAR"),
+        ("users", "usage_start",    "ALTER TABLE users ADD COLUMN usage_start TIMESTAMP"),
+        ("users", "feedback_requested","ALTER TABLE users ADD COLUMN feedback_requested INTEGER DEFAULT 0"),
+        ("job_applications", "user_id",         "ALTER TABLE job_applications ADD COLUMN user_id VARCHAR"),
+        ("job_applications", "job_external_id", "ALTER TABLE job_applications ADD COLUMN job_external_id VARCHAR"),
+        ("job_applications", "description",     "ALTER TABLE job_applications ADD COLUMN description TEXT"),
+        ("job_applications", "tailored_resume", "ALTER TABLE job_applications ADD COLUMN tailored_resume TEXT"),
+        ("job_applications", "cover_letter",    "ALTER TABLE job_applications ADD COLUMN cover_letter TEXT"),
+        ("bot_logs", "user_id",   "ALTER TABLE bot_logs ADD COLUMN user_id VARCHAR"),
+        ("bot_logs", "task_id",   "ALTER TABLE bot_logs ADD COLUMN task_id VARCHAR"),
+        ("bot_logs", "platform",  "ALTER TABLE bot_logs ADD COLUMN platform VARCHAR"),
+    ]
+
+    with engine.begin() as conn:
+        for table, col, sql in migrations:
+            if table not in tables:
+                continue
+            existing = [c["name"] for c in inspector.get_columns(table)]
+            if col in existing:
+                continue
+            try:
+                conn.execute(text(sql))
+                logger.info("Migration: added %s.%s", table, col)
+            except Exception as e:
+                if "already exists" not in str(e).lower():
+                    logger.warning("Migration skip %s.%s: %s", table, col, e)
+
+
+# ── Health / diagnostics ───────────────────────────────────────────────────────
+_REDIS_URL_CACHE: str | None = None
+
+def _redis_url() -> str | None:
+    global _REDIS_URL_CACHE
+    if _REDIS_URL_CACHE:
+        return _REDIS_URL_CACHE
+    url = os.getenv("REDIS_URL")
+    if not url and os.getenv("REDIS_HOST"):
+        pw   = os.getenv("REDIS_PASSWORD", "")
+        host = os.getenv("REDIS_HOST", "localhost")
+        port = os.getenv("REDIS_PORT", "6379")
+        url  = f"redis://:{pw}@{host}:{port}" if pw else f"redis://{host}:{port}"
+    _REDIS_URL_CACHE = url
+    return url
+
 
 @app.get("/health")
 def health():
-    """
-    Health check endpoint - returns 200 if API is running.
-    Used by Render to verify service is alive.
-    """
-    return {
-        "status": "ok",
-        "service": "JobRocket API",
-        "timestamp": datetime.utcnow().isoformat(),
-    }
+    checks: dict = {}
 
-@app.get("/db-check")
-def db_check():
-    """
-    Database connectivity check - returns list of tables if DB is connected.
-    Useful for debugging database issues.
-    """
-    try:
-        from database import engine
-        from sqlalchemy import text, inspect
-
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-
-        logger.info(f"✅ Database check passed. Tables: {tables}")
-        return {
-            "status": "ok",
-            "database": "connected",
-            "tables": tables,
-            "count": len(tables),
-        }
-
-    except Exception as e:
-        logger.error(f"❌ Database check failed: {str(e)}", exc_info=True)
-        return {
-            "status": "error",
-            "database": "failed",
-            "detail": str(e),
-        }
-
-@app.post("/debug-register")
-def debug_register(body: dict):
-    """
-    Development-only endpoint to create test users.
-    Should be disabled in production via environment variable.
-    """
-    try:
-        if not os.getenv("DEBUG_MODE", "false").lower() == "true":
-            return {"error": "Debug mode disabled"}
-
-        from database import SessionLocal, User
-        from passlib.context import CryptContext
-
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-        with SessionLocal() as db:
-            existing = db.get(User, body.get("email"))
-            if existing:
-                logger.warning(f"Debug register: user {body.get('email')} already exists")
-                return {"result": "already_exists", "email": body.get("email")}
-
-            user = User(
-                email=body["email"],
-                name=body["name"],
-                hashed_pw=pwd_context.hash(body["password"])
-            )
-
-            db.add(user)
-            db.commit()
-
-            logger.info(f"✅ Debug register: created user {body.get('email')}")
-            return {"result": "created", "email": body.get("email")}
-
-    except Exception as e:
-        logger.error(f"❌ Debug register error: {str(e)}", exc_info=True)
-        return {
-            "error": str(e),
-            "type": type(e).__name__,
-        }
-
-# ═════════════════════════════════════════════════════════════════════════════
-# DATABASE MIGRATION ENDPOINTS
-# ═════════════════════════════════════════════════════════════════════════════
-
-@app.post("/migrate/add-trial-columns")
-def migrate_add_trial_columns(api_key: str = None):
-    """
-    One-time migration endpoint to add missing users-table columns.
-    
-    Security: Accepts requests if:
-    1. api_key matches MIGRATION_API_KEY env var, OR
-    2. MIGRATION_API_KEY is not set in environment (development/setup mode)
-    
-    Usage:
-        POST /migrate/add-trial-columns
-        OR: POST /migrate/add-trial-columns?api_key=YOUR_SECRET_KEY
-    """
-    
-    # Security check - allow if key matches OR if no key is configured (first-time setup)
-    required_key = os.getenv("MIGRATION_API_KEY")
-    if required_key and api_key != required_key:
-        logger.warning(f"❌ Migration endpoint called with invalid API key")
-        return JSONResponse(
-            status_code=403,
-            content={"error": "Unauthorized", "detail": "Invalid API key"}
-        )
-    
+    # Database
     try:
         from database import engine
         from sqlalchemy import text
-        
-        logger.info("🚀 Starting database migration: adding missing users columns...")
-        
-        # SQL to add missing columns
-        migration_sql = [
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_start TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_end TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_used INTEGER DEFAULT 0",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'free'",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_id VARCHAR(255) DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS usage_start TIMESTAMP DEFAULT NULL",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS feedback_requested INTEGER DEFAULT 0",
-        ]
-        
-        results = []
-        with engine.begin() as conn:
-            for sql in migration_sql:
-                try:
-                    conn.execute(text(sql))
-                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
-                    logger.info(f"✅ Added column: {col_name}")
-                    results.append({"column": col_name, "status": "added"})
-                except Exception as col_error:
-                    # Column might already exist, which is fine
-                    col_name = sql.split("ADD COLUMN")[1].strip().split()[0]
-                    logger.info(f"ℹ️  Column {col_name} already exists or error: {str(col_error)}")
-                    results.append({"column": col_name, "status": "skipped", "reason": str(col_error)})
-        
-        # Verify migration by checking table structure
-        from sqlalchemy import inspect
-        inspector = inspect(engine)
-        columns = [col['name'] for col in inspector.get_columns("users")]
-        
-        logger.info(f"✅ Migration completed. Users table now has {len(columns)} columns")
-        
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Migration completed successfully",
-                "columns_processed": results,
-                "total_columns": len(columns),
-            }
-        )
-    
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["database"] = "ok"
     except Exception as e:
-        logger.error(f"❌ Migration error: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Migration failed",
-                "detail": str(e),
-                "type": type(e).__name__,
-            }
-        )
+        checks["database"] = f"error: {e}"
+
+    # Redis
+    try:
+        import redis as _redis
+        r = _redis.from_url(_redis_url() or "redis://localhost:6379",
+                            socket_connect_timeout=2, socket_timeout=2)
+        r.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"unavailable: {e}"
+
+    overall = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    return {
+        "status":    overall,
+        "checks":    checks,
+        "service":   "JobRocket API v2",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/db-check")
+def db_check():
+    try:
+        from database import engine
+        from sqlalchemy import text, inspect
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        tables = inspect(engine).get_table_names()
+        return {"status": "ok", "tables": tables}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.post("/migrate/add-trial-columns")
+def migrate_legacy(api_key: str = None):
+    """Legacy migration endpoint — kept for backward compatibility."""
+    key = os.getenv("MIGRATION_API_KEY")
+    if key and api_key != key:
+        return JSONResponse(status_code=403, content={"error": "Unauthorized"})
+    _migrate_existing_schema()
+    return {"status": "ok", "message": "Migration complete"}

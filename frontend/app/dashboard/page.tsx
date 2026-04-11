@@ -161,12 +161,20 @@ export default function DashboardPage() {
               {user ? `Welcome back, ${user.name}!` : "Loading..."}
             </p>
           </div>
-          <button
-            onClick={() => logout(router)}
-            className="text-gray-600 hover:text-gray-900 text-sm underline"
-          >
-            Sign out
-          </button>
+          <div className="flex items-center gap-4">
+            <Link href="/resume" className="text-sm font-medium text-purple-600 hover:text-purple-800">
+              Resume Builder
+            </Link>
+            <Link href="/recruiter" className="text-sm font-medium text-blue-600 hover:text-blue-800">
+              Recruiter Contacts
+            </Link>
+            <button
+              onClick={() => logout(router)}
+              className="text-gray-600 hover:text-gray-900 text-sm underline"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 

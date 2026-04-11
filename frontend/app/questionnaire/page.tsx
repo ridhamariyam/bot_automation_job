@@ -115,7 +115,7 @@ export default function QuestionnairePage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-white flex flex-col items-center justify-center px-4 py-12">
       <a href="/" className="mb-8 text-2xl font-bold text-indigo-600 tracking-tight">
-        JobRocket<span className="text-gray-900">.ai</span>
+        JobRocket
       </a>
 
       {/* Progress */}

@@ -1,12 +1,38 @@
-"""Bot runner — sequential LinkedIn then Indeed, no concurrent crash."""
-import asyncio, sys, os, httpx
+"""
+JobRocket Bot Runner v2 — orchestrates platform adapters via the BrowserPool.
+
+Execution modes:
+    1. ARQ worker (production): bot_worker.py calls run_bot_task() directly
+    2. Subprocess (dev/fallback): spawned by backend bot.py router
+    3. CLI: python bot/runner.py [for local testing]
+
+In subprocess/CLI mode this script runs one user's full automation session.
+"""
+import asyncio
+import logging
+import os
+import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-import linkedin
-import indeed
+import httpx
 
-BASE_URL = "http://localhost:8000"
+# Ensure backend imports work when run as subprocess
+_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_ROOT / "backend"))
+sys.path.insert(0, str(_ROOT))
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+BASE_URL = os.getenv("BOT_API_URL", "http://localhost:8000")
+
+PLATFORM_MAP = {
+    "linkedin":    "bot.platforms.linkedin_jobs.LinkedInJobsAdapter",
+    "indeed":      "bot.platforms.indeed.IndeedAdapter",
+    "glassdoor":   "bot.platforms.glassdoor.GlassdoorAdapter",
+    "monster":     "bot.platforms.monster.MonsterAdapter",
+    "google_jobs": "bot.platforms.google_jobs.GoogleJobsAdapter",
+}
 
 
 async def fetch_profile(user_email: str, token: str) -> dict:
@@ -17,96 +43,158 @@ async def fetch_profile(user_email: str, token: str) -> dict:
             timeout=10,
         )
         if r.status_code != 200:
-            raise RuntimeError(f"Could not fetch profile: {r.text}")
+            raise RuntimeError(f"Profile fetch failed: {r.text}")
         return r.json()
 
 
+async def post_log(user_email: str, message: str, level: str = "info"):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{BASE_URL}/api/bot/log",
+                json={"user_email": user_email, "message": message, "level": level},
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+
+async def record_application(user_email: str, job) -> None:
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{BASE_URL}/api/jobs",
+                json={
+                    "user_email": user_email,
+                    "title":      job.title,
+                    "company":    job.company,
+                    "location":   job.location,
+                    "platform":   job.platform,
+                    "job_url":    job.url,
+                    "status":     "Applied",
+                    "proof":      getattr(job, "proof", f"{job.platform} Easy Apply"),
+                },
+                timeout=10,
+            )
+    except Exception as e:
+        logger.warning("Failed to record application: %s", e)
+
+
+def _import_adapter(dotted: str):
+    parts  = dotted.rsplit(".", 1)
+    module = __import__(parts[0], fromlist=[parts[1]])
+    return getattr(module, parts[1])
+
+
 async def main(user_email: str, token: str, max_jobs_each: int = 50):
-    print(f"\n🚀 JobRocket Bot starting for {user_email}")
-    print("   Press Ctrl+C to stop.\n")
+    logger.info("JobRocket Bot v2 starting for %s", user_email)
 
     data = await fetch_profile(user_email, token)
 
-    # Parse locations properly — split by newline OR semicolon first,
-    # fall back to comma only if no other delimiter found
-    raw_locations = data.get("target_locations", [])
-    locations = _clean_locations(raw_locations)
     titles    = [t.strip() for t in data.get("target_titles", []) if t.strip()]
+    locations = _clean_locations(data.get("target_locations", []))
 
     if not titles:
-        print("❌ No target job titles set. Go to Settings → Profile.")
+        await post_log(user_email, "No target job titles set. Go to Settings → Profile.", "error")
         return
     if not locations:
-        print("❌ No target locations set. Go to Settings → Profile.")
+        await post_log(user_email, "No target locations set. Go to Settings → Profile.", "error")
         return
 
-    print(f"   Titles:    {titles}")
-    print(f"   Locations: {locations}\n")
+    logger.info("Titles: %s", titles)
+    logger.info("Locations: %s", locations)
 
-    profile = {
-        "user_email":       user_email,
-        "name":             data.get("name", ""),
-        "phone":            data.get("phone", ""),
-        "cv_path":          data.get("cv_path", ""),
-        "target_titles":    titles,
-        "target_locations": locations,
-        "skills":           data.get("skills", []),
-        "years_experience": str(data.get("years_experience", "2")),
-        "expected_salary":  str(data.get("expected_salary", "800000")),
-        "notice_period":    str(data.get("notice_period", "30")),
-        "linkedin_email":   data.get("linkedin_email", ""),
-        "linkedin_password":data.get("linkedin_password", ""),
-        "indeed_email":     data.get("indeed_email", ""),
-        "indeed_password":  data.get("indeed_password", ""),
-    }
+    # Determine which platforms to run (based on verified credentials)
+    platforms_to_run: list[tuple[str, str, str]] = []
+    for platform, dotted_class in PLATFORM_MAP.items():
+        plat_email = data.get(f"{platform}_email", "")
+        plat_pass  = data.get(f"{platform}_password", "")
+        if plat_email and plat_pass:
+            platforms_to_run.append((platform, plat_email, plat_pass))
 
-    stop_event = asyncio.Event()
-
-    # ── Run LinkedIn first, then Indeed (sequential — avoids browser conflicts) ──
-    if profile["linkedin_email"] and profile["linkedin_password"]:
-        print("─── LinkedIn ───────────────────────────────────")
-        li_profile = {**profile, "email": profile["linkedin_email"], "password": profile["linkedin_password"]}
-        try:
-            await linkedin.run(li_profile, stop_event, max_jobs=max_jobs_each)
-        except Exception as e:
-            print(f"[LinkedIn] Fatal error: {e}")
-    else:
-        print("⚠️  LinkedIn credentials not set — skipping.")
-
-    if stop_event.is_set():
-        print("\n✅ Bot stopped by user.")
+    if not platforms_to_run:
+        await post_log(
+            user_email,
+            "No platform credentials found. Set up at least one platform in Settings.",
+            "error",
+        )
         return
 
-    if profile["indeed_email"] and profile["indeed_password"]:
-        print("\n─── Indeed ─────────────────────────────────────")
-        in_profile = {**profile, "email": profile["indeed_email"], "password": profile["indeed_password"]}
-        try:
-            await indeed.run(in_profile, stop_event, max_jobs=max_jobs_each)
-        except Exception as e:
-            print(f"[Indeed] Fatal error: {e}")
-    else:
-        print("⚠️  Indeed credentials not set — skipping.")
+    await post_log(
+        user_email,
+        f"Running on platforms: {', '.join(p[0] for p in platforms_to_run)}",
+        "info",
+    )
 
-    print("\n✅ Bot finished.")
+    # Import and run adapters using a shared BrowserPool
+    from bot.browser.pool import BrowserPool
+    from bot.platforms.base import PlatformConfig
+
+    pool = BrowserPool(size=min(len(platforms_to_run), 3))
+    await pool.start()
+
+    try:
+        for platform, plat_email, plat_pass in platforms_to_run:
+            AdapterClass = _import_adapter(PLATFORM_MAP[platform])
+            config       = PlatformConfig(
+                platform_id      = platform,
+                email            = plat_email,
+                password         = plat_pass,
+                target_titles    = titles,
+                target_locations = locations,
+                max_applications = max_jobs_each,
+                cv_path          = data.get("cv_path") or None,
+                phone            = data.get("phone") or None,
+                skills           = (
+                    ",".join(data.get("skills", []))
+                    if isinstance(data.get("skills"), list)
+                    else data.get("skills") or ""
+                ),
+            )
+
+            await post_log(user_email, f"Starting {platform}...", "info")
+
+            async with pool.acquire() as ctx:
+                adapter = AdapterClass(config, ctx)
+
+                # Inject logging function
+                async def _log(msg: str, lvl: str = "info"):
+                    await post_log(user_email, f"[{platform}] {msg}", lvl)
+
+                adapter._log_fn = _log
+                results         = await adapter.run()
+
+            # Record applied jobs
+            applied = [r for r in results if r.applied]
+            for job in applied:
+                await record_application(user_email, job)
+
+            await post_log(
+                user_email,
+                f"{platform}: applied to {len(applied)}/{len(results)} jobs",
+                "success" if applied else "info",
+            )
+
+    finally:
+        await pool.shutdown()
+
+    await post_log(user_email, "Bot finished all platforms.", "success")
+    logger.info("Bot finished for %s", user_email)
 
 
-def _clean_locations(raw: list[str]) -> list[str]:
-    """
-    Handles locations like ['Doha, Qatar', 'Dubai, UAE'] that arrive
-    pre-split from DB comma-split. Re-joins 'City, Country' pairs.
-    """
-    # If already good (multi-word like 'Doha Qatar') just return cleaned
+def _clean_locations(raw: list) -> list[str]:
+    """Rejoin 'City, Country' pairs that were split by comma."""
     result = []
-    i = 0
+    i      = 0
     while i < len(raw):
         loc = raw[i].strip()
-        # Check if next token looks like a country suffix (short, no digits)
-        if (i + 1 < len(raw)
-                and len(raw[i + 1].strip()) <= 20
-                and not any(c.isdigit() for c in raw[i + 1])
-                and raw[i + 1].strip() not in ("Remote", "remote")):
-            combined = f"{loc}, {raw[i+1].strip()}"
-            result.append(combined)
+        if (
+            i + 1 < len(raw)
+            and len(raw[i + 1].strip()) <= 20
+            and not any(c.isdigit() for c in raw[i + 1])
+            and raw[i + 1].strip() not in ("Remote", "remote")
+        ):
+            result.append(f"{loc}, {raw[i+1].strip()}")
             i += 2
         else:
             result.append(loc)
@@ -116,10 +204,10 @@ def _clean_locations(raw: list[str]) -> list[str]:
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent.parent / "backend" / ".env")
+    load_dotenv(_ROOT / "backend" / ".env")
 
-    email = os.getenv("BOT_USER_EMAIL") or input("JobRocket email: ").strip()
-    token = os.getenv("BOT_TOKEN")      or input("Token: ").strip()
-    max_j = int(os.getenv("BOT_MAX_JOBS", "50"))
+    _email = os.getenv("BOT_USER_EMAIL") or input("Email: ").strip()
+    _token = os.getenv("BOT_TOKEN")      or input("Token: ").strip()
+    _max   = int(os.getenv("BOT_MAX_JOBS", "50"))
 
-    asyncio.run(main(email, token, max_jobs_each=max_j))
+    asyncio.run(main(_email, _token, max_jobs_each=_max))

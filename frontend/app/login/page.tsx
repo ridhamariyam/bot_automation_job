@@ -43,7 +43,6 @@ export default function LoginPage() {
         <div className="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between">
           <Link href="/" className="text-base font-bold tracking-tight">
             <span className="text-indigo-400">Job</span>Rocket
-            <span className="text-white/40 font-normal">.ai</span>
           </Link>
           <p className="text-sm text-white/40">
             No account?{" "}
@@ -118,7 +117,7 @@ export default function LoginPage() {
 
       <footer className="flex-none border-t border-white/5 py-4 px-5">
         <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-white/20">
-          <span><span className="text-indigo-400">Job</span>Rocket.ai</span>
+          <span><span className="text-indigo-400">Job</span>Rocket</span>
           <span>© {new Date().getFullYear()} · Built with AI</span>
         </div>
       </footer>
@@ -160,7 +159,6 @@ function ForgotPassword({ onBack }: { onBack: () => void }) {
         <div className="max-w-6xl mx-auto px-5 h-14 flex items-center">
           <Link href="/" className="text-base font-bold tracking-tight">
             <span className="text-indigo-400">Job</span>Rocket
-            <span className="text-white/40 font-normal">.ai</span>
           </Link>
         </div>
       </nav>
@@ -235,7 +233,7 @@ function ForgotPassword({ onBack }: { onBack: () => void }) {
 
       <footer className="flex-none border-t border-white/5 py-4 px-5">
         <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-white/20">
-          <span><span className="text-indigo-400">Job</span>Rocket.ai</span>
+          <span><span className="text-indigo-400">Job</span>Rocket</span>
           <span>© {new Date().getFullYear()} · Built with AI</span>
         </div>
       </footer>
