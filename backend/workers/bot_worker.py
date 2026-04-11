@@ -205,13 +205,21 @@ def _get_adapter(platform: str):
 
 
 async def _enrich_with_ai(user_email: str, applied_jobs, config: dict):
-    """Background task: generate cover letters for applied jobs."""
+    """
+    Background task after bot run:
+      1. Generate AI cover letters for every applied job.
+      2. Tailor the user's default resume to each job (if a default resume exists).
+    Both results are stored on the JobApplication row for later download.
+    """
+    jobs_data = [
+        {"title": r.title, "company": r.company, "description": r.description or "",
+         "job_id": r.job_id, "url": r.url}
+        for r in applied_jobs
+    ]
+
+    # ── Cover letters ──────────────────────────────────────────────────────────
     try:
         from ai.cover_letter import generate_cover_letter_batch
-        jobs_data = [
-            {"title": r.title, "company": r.company, "description": r.description or ""}
-            for r in applied_jobs
-        ]
         enriched = await generate_cover_letter_batch(
             user_profile={"name": config["name"], "skills": config["skills"]},
             jobs=jobs_data,
@@ -220,13 +228,65 @@ async def _enrich_with_ai(user_email: str, applied_jobs, config: dict):
             for job_data, result in zip(applied_jobs, enriched):
                 app = db.query(JobApplication).filter_by(
                     user_email=user_email,
-                    job_external_id=result.get("job_id") or job_data.job_id,
+                    job_external_id=job_data["job_id"],
                 ).first()
                 if app and result.get("cover_letter"):
                     app.cover_letter = result["cover_letter"]
             db.commit()
+        logger.info("Cover letters generated for %d jobs", len(enriched))
     except Exception as e:
-        logger.warning("AI enrichment failed: %s", e)
+        logger.warning("Cover letter generation failed: %s", e)
+
+    # ── Auto-tailor default resume ─────────────────────────────────────────────
+    try:
+        from database import Resume
+        from services.resume_ai_optimizer import optimize_resume_for_job
+
+        with SessionLocal() as db:
+            default_resume = db.query(Resume).filter_by(
+                user_email=user_email, is_default=True
+            ).first()
+            if not default_resume:
+                default_resume = db.query(Resume).filter_by(
+                    user_email=user_email
+                ).order_by(Resume.created_at.desc()).first()
+
+            if not default_resume:
+                logger.info("No resume found for %s — skipping resume tailoring", user_email)
+                return
+
+            # Serialize INSIDE session to avoid DetachedInstanceError on lazy-loaded relationships
+            from routers.resume import _serialize_resume
+            resume_data = _serialize_resume(default_resume)   # session still open here
+
+        for job in applied_jobs:
+            if not job.description:
+                continue
+            try:
+                optimized = await optimize_resume_for_job(
+                    resume_data     = resume_data,
+                    job_title       = job.title,
+                    company         = job.company,
+                    job_description = job.description,
+                )
+                if not optimized:
+                    continue
+
+                import json as _json
+                with SessionLocal() as db:
+                    app = db.query(JobApplication).filter_by(
+                        user_email=user_email, job_external_id=job.job_id,
+                    ).first()
+                    if app:
+                        app.tailored_resume = _json.dumps(optimized)
+                    db.commit()
+            except Exception as e:
+                logger.warning("Resume tailoring failed for job %s: %s", job.job_id, e)
+
+        logger.info("Resume tailoring complete for %d applied jobs", len(applied_jobs))
+
+    except Exception as e:
+        logger.warning("Auto-resume enrichment failed: %s", e)
 
 
 # ── Worker lifecycle ───────────────────────────────────────────────────────────

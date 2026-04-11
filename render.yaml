@@ -45,7 +45,7 @@ services:
         value: pri_01kkvt1en449pt4vgw3mv50ca2
       # URLs
       - key: FRONTEND_URL
-        value: https://JobRocketviora.online
+        value: https://jobrocket.aiviora.online
       - key: EXTRA_CORS_ORIGINS
         sync: false
       # AI

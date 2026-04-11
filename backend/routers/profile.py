@@ -78,8 +78,10 @@ async def create_profile(
 
             db.commit()
             db.refresh(user)
+            # Build response while session is still open so no DetachedInstanceError
+            profile_data = _fmt(user, db)
 
-        return JSONResponse(status_code=200, content=_fmt(user, db=None))
+        return JSONResponse(status_code=200, content=profile_data)
 
     except HTTPException:
         raise
@@ -106,21 +108,23 @@ class CredentialItem(BaseModel):
 
 
 class CredentialsIn(BaseModel):
-    # Support both old-style flat update and new per-platform
-    linkedin_email:     str = ""
-    linkedin_password:  str = ""
-    indeed_email:       str = ""
-    indeed_password:    str = ""
-    glassdoor_email:    str = ""
-    glassdoor_password: str = ""
-    monster_email:      str = ""
-    monster_password:   str = ""
-    naukri_email:       str = ""
-    naukri_password:    str = ""
-    bayt_email:         str = ""
-    bayt_password:      str = ""
-    timesjobs_email:    str = ""
-    timesjobs_password: str = ""
+    # All supported platforms
+    linkedin_email:      str = ""
+    linkedin_password:   str = ""
+    indeed_email:        str = ""
+    indeed_password:     str = ""
+    glassdoor_email:     str = ""
+    glassdoor_password:  str = ""
+    monster_email:       str = ""
+    monster_password:    str = ""
+    naukri_email:        str = ""
+    naukri_password:     str = ""
+    bayt_email:          str = ""
+    bayt_password:       str = ""
+    timesjobs_email:     str = ""
+    timesjobs_password:  str = ""
+    google_jobs_email:   str = ""
+    google_jobs_password: str = ""
 
 
 @router.patch("/{email}/credentials")

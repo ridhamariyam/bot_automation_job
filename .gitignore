@@ -16,6 +16,10 @@ frontend/.env.local
 .env
 backend/.env
 
+# Bot session files — contain real auth cookies, never commit
+bot/sessions/
+bot/sessions/*.json
+
 # OS
 .DS_Store
 .vercel

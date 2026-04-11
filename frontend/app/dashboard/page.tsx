@@ -19,6 +19,8 @@ type Job = {
   status: string;
   applied_at: string;
   proof?: string;
+  has_cover_letter?: boolean;
+  has_tailored_resume?: boolean;
 };
 
 const API = process.env.NEXT_PUBLIC_API_URL as string;
@@ -363,13 +365,23 @@ export default function DashboardPage() {
                       <td className="py-3 px-4 text-gray-600 text-sm">
                         {new Date(job.applied_at).toLocaleDateString()}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 space-x-2">
                         <button
                           onClick={() => setSelectedJob(job)}
                           className="text-blue-600 hover:text-blue-700 font-medium text-xs hover:underline"
                         >
                           Details
                         </button>
+                        {job.has_tailored_resume && (
+                          <a
+                            href={`${API}/api/jobs/${job.id}/tailored-resume/pdf`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-purple-600 hover:text-purple-700 font-medium text-xs hover:underline"
+                          >
+                            CV PDF
+                          </a>
+                        )}
                       </td>
                     </tr>
                   ))}
