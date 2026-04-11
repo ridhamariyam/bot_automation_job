@@ -105,13 +105,3 @@ services:
       - key: BOT_API_URL
         value: https://jobrocket-backend.onrender.com
 
-# ── Redis ──────────────────────────────────────────────────────────────────
-redis:
-  - name: jobrocket-redis
-    plan: free
-
-databases:
-  - name: jobrocket-db
-    databaseName: jobrocket
-    user: jobrocket
-    plan: free
