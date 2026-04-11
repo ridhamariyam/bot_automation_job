@@ -62,10 +62,9 @@ services:
   # ── ARQ Bot Worker ─────────────────────────────────────────────────────────
   - type: worker
     name: jobrocket-bot-worker
-    runtime: python
-    rootDir: .
-    buildCommand: pip install --prefer-binary -r backend/requirements.txt && playwright install chromium --with-deps
-    startCommand: cd backend && python -m arq workers.bot_worker.WorkerSettings
+    runtime: docker
+    dockerfilePath: ./Dockerfile.worker
+    # Docker caches pip + Chromium layers — only app code layer re-runs on deploy
     envVars:
       - key: DATABASE_URL
         fromDatabase:
