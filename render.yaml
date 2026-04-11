@@ -4,8 +4,8 @@ services:
     name: jobrocket-backend
     runtime: python
     rootDir: backend
-    # playwright --with-deps installs libpango, libcairo, libfontconfig — WeasyPrint uses these too
-    buildCommand: pip install --prefer-binary -r requirements.txt && playwright install chromium --with-deps
+    # WeasyPrint needs libpango/libcairo — installed via system packages, not playwright
+    buildCommand: pip install --prefer-binary -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     envVars:
@@ -77,15 +77,9 @@ services:
           type: redis
           property: connectionString
       - key: JWT_SECRET
-        fromService:
-          name: jobrocket-backend
-          type: web
-          envVarKey: JWT_SECRET
+        sync: false
       - key: ENCRYPTION_KEY
-        fromService:
-          name: jobrocket-backend
-          type: web
-          envVarKey: ENCRYPTION_KEY
+        sync: false
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT

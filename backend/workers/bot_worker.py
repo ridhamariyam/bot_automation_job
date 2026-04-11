@@ -308,16 +308,20 @@ async def shutdown(ctx):
 
 def _redis_settings():
     from arq.connections import RedisSettings
-    import re
+    from urllib.parse import urlparse
 
     url = os.getenv("REDIS_URL", "")
     if url:
-        m = re.match(r"redis://(?::(.+)@)?([^:/]+):(\d+)", url)
-        if m:
-            return RedisSettings(
-                host=m.group(2), port=int(m.group(3)),
-                password=m.group(1) or None,
-            )
+        # Render gives redis:// or rediss:// (TLS) with optional user:password@host:port
+        # Use urlparse so we handle all variants correctly
+        p = urlparse(url)
+        use_tls = p.scheme == "rediss"
+        return RedisSettings(
+            host     = p.hostname or "localhost",
+            port     = p.port or 6379,
+            password = p.password or None,
+            ssl      = use_tls,
+        )
 
     return RedisSettings(
         host     = os.getenv("REDIS_HOST", "localhost"),
