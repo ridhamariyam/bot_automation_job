@@ -5,7 +5,7 @@ services:
     runtime: python
     rootDir: backend
     # playwright --with-deps installs libpango, libcairo, libfontconfig — WeasyPrint uses these too
-    buildCommand: pip install -r requirements.txt && playwright install chromium --with-deps
+    buildCommand: pip install --prefer-binary -r requirements.txt && playwright install chromium --with-deps
     startCommand: python migrate_add_trial_columns.py && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     envVars:
@@ -64,7 +64,7 @@ services:
     name: jobrocket-bot-worker
     runtime: python
     rootDir: .
-    buildCommand: pip install -r backend/requirements.txt && playwright install chromium --with-deps
+    buildCommand: pip install --prefer-binary -r backend/requirements.txt && playwright install chromium --with-deps
     startCommand: cd backend && python -m arq workers.bot_worker.WorkerSettings
     envVars:
       - key: DATABASE_URL
