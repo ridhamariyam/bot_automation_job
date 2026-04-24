@@ -38,6 +38,9 @@ async def create_profile(
     skills:          str        = Form(""),
     targetTitles:    str        = Form(""),
     targetLocations: str        = Form(""),
+    yearsExp:        str        = Form(""),
+    salary:          str        = Form(""),
+    noticePeriod:    str        = Form(""),
     cv:              UploadFile = File(None),
 ):
     try:
@@ -75,6 +78,12 @@ async def create_profile(
             user.target_locations = "\n".join(locs)
             if cv_path:
                 user.cv_path = cv_path
+            if yearsExp:
+                user.years_exp = int(yearsExp)
+            if salary:
+                user.salary = int(salary)
+            if noticePeriod:
+                user.notice_period = int(noticePeriod)
 
             db.commit()
             db.refresh(user)
@@ -214,6 +223,9 @@ def _fmt(user: User, db) -> dict:
             for l in (getattr(user, "target_locations", "") or "").replace("\r", "").split("\n")
             if l.strip()
         ],
+        "years_exp":       getattr(user, "years_exp", None),
+        "salary":          getattr(user, "salary", None),
+        "notice_period":   getattr(user, "notice_period", None),
     }
 
     # Add per-platform credential info (email + verified, never password)

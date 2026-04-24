@@ -46,6 +46,8 @@ services:
       # URLs
       - key: FRONTEND_URL
         value: https://jobrocket.aiviora.online
+      - key: RESET_BASE_URL
+        value: https://jobrocket.aiviora.online
       - key: EXTRA_CORS_ORIGINS
         sync: false
       # AI

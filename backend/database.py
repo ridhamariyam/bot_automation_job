@@ -120,6 +120,11 @@ class User(Base):
     cv_path          = Column(String, nullable=True)
     cv_public_url    = Column(String, nullable=True)
 
+    # Screening defaults
+    years_exp        = Column(Integer, nullable=True)
+    salary           = Column(Integer, nullable=True)
+    notice_period    = Column(Integer, nullable=True)
+
     # ── Legacy flat credential columns (kept for backward compat) ──────────────
     # New code reads/writes PlatformCredential rows instead.
     # These remain so old sessions don't break on redeploy.

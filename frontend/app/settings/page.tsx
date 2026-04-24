@@ -82,6 +82,9 @@ export default function SettingsPage() {
         setTargetLocations((p.target_locations ?? []).join("\n"));
         setSkills((p.skills ?? []).join(", "));
         if (p.cv_path) setCvName(p.cv_path.split("/").pop() ?? "");
+        if (p.years_exp != null)    setYearsExp(String(p.years_exp));
+        if (p.salary != null)       setSalary(String(p.salary));
+        if (p.notice_period != null) setNoticePeriod(String(p.notice_period));
 
         // Populate credential state for all platforms
         const init: Record<string, CredentialState> = {};
