@@ -109,14 +109,14 @@ function ScoreBarRow({
 }: { label: string; value: number; max: number; color: string }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="text-xs text-gray-500 w-24 flex-shrink-0">{label}</span>
-      <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+      <span className="text-xs text-gray-500 w-20 sm:w-24 flex-shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden min-w-0">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${Math.round((value / max) * 100)}%`, background: color }}
         />
       </div>
-      <span className="text-xs font-semibold text-gray-700 tabular-nums w-10 text-right">
+      <span className="text-xs font-semibold text-gray-700 tabular-nums w-10 text-right flex-shrink-0">
         {value}/{max}
       </span>
     </div>
@@ -229,7 +229,7 @@ function PlatformTable({ jobs }: { jobs: ScoredJob[] }) {
   }
 
   return (
-    <div className="overflow-x-auto -mx-1">
+    <div className="overflow-x-auto w-full">
       <table className="w-full text-sm min-w-[540px]">
         <thead>
           <tr className="border-b border-gray-100">
@@ -456,24 +456,26 @@ export default function ScoringPage() {
         {stats && <AdaptiveBanner stats={stats} />}
 
         {/* Tab bar */}
-        <div className="flex gap-1 bg-gray-100 rounded-xl p-1 w-fit overflow-x-auto">
-          {TABS.map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => {
-                setTab(key);
-                if (key === "intelligence") intel.load();
-              }}
-              className={[
-                "px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 whitespace-nowrap",
-                tab === key
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700",
-              ].join(" ")}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="w-full overflow-x-auto">
+          <div className="flex gap-1 bg-gray-100 rounded-xl p-1 w-max">
+            {TABS.map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => {
+                  setTab(key);
+                  if (key === "intelligence") intel.load();
+                }}
+                className={[
+                  "px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 whitespace-nowrap",
+                  tab === key
+                    ? "bg-white text-gray-900 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* ── TODAY TAB ──────────────────────────────────────────────────── */}

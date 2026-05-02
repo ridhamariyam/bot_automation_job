@@ -305,7 +305,7 @@ export function SuggestionsPanel({ jobs, config, loading }: Props) {
               const pct = Math.round((count / max) * 100);
               return (
                 <div key={skill} className="flex items-center gap-3">
-                  <span className="text-xs text-gray-700 font-medium w-36 flex-shrink-0 truncate">
+                  <span className="text-xs text-gray-700 font-medium w-24 sm:w-36 flex-shrink-0 truncate">
                     {skill}
                   </span>
                   <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">

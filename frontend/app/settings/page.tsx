@@ -1,10 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "../lib/useAuth";
 import { PlatformCard, type PlatformStatus } from "../components/PlatformCard";
+
+export default function SettingsPage() {
+  return (
+    <Suspense>
+      <SettingsInner />
+    </Suspense>
+  );
+}
 
 const API = process.env.NEXT_PUBLIC_API_URL as string;
 
@@ -69,7 +77,7 @@ const TABS: { id: Section; label: string }[] = [
   { id: "screening", label: "Screening" },
 ];
 
-export default function SettingsPage() {
+function SettingsInner() {
   useAuth();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get("tab");
@@ -427,14 +435,14 @@ export default function SettingsPage() {
 
       {/* ── Floating Tab Bar ── */}
       <div className="max-w-xl mx-auto px-4 -mt-4 relative z-10 mb-5">
-        <div className="flex gap-1 bg-white rounded-2xl p-1 shadow-[0_4px_20px_rgba(0,0,0,0.10),0_1px_4px_rgba(0,0,0,0.06)]">
+        <div className="flex gap-0.5 bg-white rounded-2xl p-1 shadow-[0_4px_20px_rgba(0,0,0,0.10),0_1px_4px_rgba(0,0,0,0.06)]">
           {TABS.map(t => (
             <button
               key={t.id}
               type="button"
               onClick={() => setActive(t.id)}
               className={[
-                "flex-1 min-w-[64px] px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all duration-150 whitespace-nowrap",
+                "flex-1 px-2 py-2.5 rounded-xl text-[11px] sm:text-[13px] font-semibold transition-all duration-150 whitespace-nowrap overflow-hidden text-ellipsis",
                 active === t.id
                   ? "bg-[#1C1410] text-white shadow-sm"
                   : "text-[#A89F96] hover:text-[#1C1917]",
@@ -645,7 +653,7 @@ export default function SettingsPage() {
 
           {/* Error */}
           {error && (
-            <div className="whitespace-pre-wrap px-4 py-3 rounded-xl bg-[#FEF5F2] border border-[#FDDDD5] text-[13px] text-[#C0392B] leading-snug">
+            <div className="px-4 py-3 rounded-xl bg-[#FEF5F2] border border-[#FDDDD5] text-[13px] text-[#C0392B] leading-snug break-words overflow-hidden whitespace-pre-line">
               {error}
             </div>
           )}

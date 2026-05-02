@@ -220,7 +220,7 @@ export function PlatformCard({
     <>
       <div
         className={[
-          "group relative rounded-2xl px-5 py-4",
+          "group relative rounded-2xl px-4 py-4 w-full overflow-hidden",
           "transition-all duration-200",
           isReady
             ? "bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-1 ring-emerald-100"
@@ -328,7 +328,7 @@ export function PlatformCard({
         {canConnect && !showForm && (
           <div className="mt-4 pt-4 border-t border-[#F0EBE4] space-y-3">
             {isExpired && (
-              <div className="whitespace-pre-wrap rounded-lg bg-amber-50 px-3 py-2.5 text-[12px] leading-relaxed text-amber-800">
+              <div className="rounded-lg bg-amber-50 px-3 py-2.5 text-[12px] leading-relaxed text-amber-800 break-words overflow-hidden">
                 Your session expired.
 
                 Reconnect the platform to continue applying.
@@ -348,7 +348,7 @@ export function PlatformCard({
               {browserLoading && (
                 <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
               )}
-              {isExpired ? "Reconnect via browser (recommended)" : "Connect via browser (recommended)"}
+              {isExpired ? "Reconnect via browser" : "Connect via browser"}
             </button>
 
             <button
@@ -356,7 +356,7 @@ export function PlatformCard({
               onClick={() => { setShowForm(true); setErr(""); }}
               className="w-full text-[12px] font-semibold text-[#786F67] hover:text-[#1A1714] transition-colors"
             >
-              Use email and password instead
+              Use email &amp; password instead
             </button>
           </div>
         )}
@@ -391,7 +391,7 @@ export function PlatformCard({
             </div>
 
             {err && (
-              <div className="rounded-lg bg-[#FEF5F2] border border-[#FDDDD5] px-3 py-2 text-[12px] leading-relaxed text-[#C0392B] whitespace-pre-line">
+              <div className="rounded-lg bg-[#FEF5F2] border border-[#FDDDD5] px-3 py-2 text-[12px] leading-relaxed text-[#C0392B] break-words whitespace-pre-line overflow-hidden">
                 {err}
               </div>
             )}
@@ -413,14 +413,14 @@ export function PlatformCard({
                   disabled:opacity-50 active:scale-[0.98] transition-all"
                 style={{ backgroundColor: brandColor }}
               >
-                {loading ? "Saving..." : isPending ? "Retry verification" : "Save fallback credentials"}
+                {loading ? "Saving…" : isPending ? "Retry" : "Save"}
               </button>
             </div>
           </form>
         )}
 
         {err && !showForm && (
-          <div className="mt-4 rounded-lg bg-[#FEF5F2] border border-[#FDDDD5] px-3 py-2 text-[12px] leading-relaxed text-[#C0392B] whitespace-pre-line">
+          <div className="mt-4 rounded-lg bg-[#FEF5F2] border border-[#FDDDD5] px-3 py-2 text-[12px] leading-relaxed text-[#C0392B] break-words overflow-hidden whitespace-pre-line">
             {err}
           </div>
         )}

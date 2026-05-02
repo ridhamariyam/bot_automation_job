@@ -35,14 +35,14 @@ function BarRow({
   const pct = Math.round((value / max) * 100);
   return (
     <div className="flex items-center gap-3">
-      <span className="text-xs text-gray-500 w-24 flex-shrink-0">{label}</span>
-      <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+      <span className="text-xs text-gray-500 w-20 flex-shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden min-w-0">
         <div
           className="h-full rounded-full transition-all duration-700"
           style={{ width: `${pct}%`, background: color }}
         />
       </div>
-      <span className="text-xs font-semibold text-gray-600 tabular-nums w-10 text-right">
+      <span className="text-xs font-semibold text-gray-600 tabular-nums w-10 text-right flex-shrink-0">
         {value}/{max}
       </span>
     </div>

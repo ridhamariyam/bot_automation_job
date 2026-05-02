@@ -301,7 +301,7 @@ async def _launch_browser_login_session(platform: str, user_email: str) -> Brows
     try:
         playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(
-            headless=False,
+            headless=True,
             slow_mo=CAPTURE_SLOW_MO_MS,
             args=CHROMIUM_ARGS,
         )
