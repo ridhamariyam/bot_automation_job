@@ -1,36 +1,83 @@
 "use client";
+
 import Link from "next/link";
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../lib/useAuth";
+import { PlatformCard, type PlatformStatus } from "../components/PlatformCard";
 
 const API = process.env.NEXT_PUBLIC_API_URL as string;
+
 type Section = "profile" | "platforms" | "screening" | "cv";
-type VerifyStatus = "idle" | "checking" | "ok" | "fail";
+type CredStatus = "idle" | "ok" | "fail";
+type CredState  = { email: string; verifyStatus: CredStatus };
 
-const PLATFORM_META: Record<string, { label: string; color: string; abbr: string; subtitle: string }> = {
-  linkedin:   { label: "LinkedIn",   color: "bg-[#0077B5]", abbr: "in", subtitle: "Easy Apply jobs" },
-  indeed:     { label: "Indeed",     color: "bg-[#003A9B]", abbr: "II", subtitle: "Easily Apply jobs" },
-  glassdoor:  { label: "Glassdoor",  color: "bg-[#0CAA41]", abbr: "GD", subtitle: "Easy Apply jobs" },
-  monster:    { label: "Monster",    color: "bg-[#6B0FAC]", abbr: "M",  subtitle: "Apply via Monster" },
-  google_jobs:{ label: "Google Jobs",color: "bg-[#EA4335]", abbr: "G",  subtitle: "Redirects to ATS pages" },
-  naukri:     { label: "Naukri",     color: "bg-[#FF7555]", abbr: "N",  subtitle: "Indian job board" },
-  bayt:       { label: "Bayt",       color: "bg-[#005BAC]", abbr: "B",  subtitle: "Middle East jobs" },
-  timesjobs:  { label: "TimesJobs",  color: "bg-[#E83030]", abbr: "TJ", subtitle: "India job board" },
-};
+const PLATFORMS = [
+  {
+    id: "linkedin",
+    name: "LinkedIn",
+    tagline: "Easy Apply · millions of jobs worldwide",
+    abbr: "in",
+    color: "#0A66C2",
+  },
+  {
+    id: "indeed",
+    name: "Indeed",
+    tagline: "Easily Apply · world's top job board",
+    abbr: "II",
+    color: "#2164F3",
+  },
+  // Coming soon
+  {
+    id: "bayt",
+    name: "Bayt.com",
+    tagline: "Top job board for MENA & Gulf region",
+    abbr: "B",
+    color: "#C1272D",
+    comingSoon: true,
+  },
+  {
+    id: "gmail",
+    name: "Gmail",
+    tagline: "Send applications directly via email",
+    abbr: "M",
+    color: "#EA4335",
+    comingSoon: true,
+  },
+  {
+    id: "glassdoor",
+    name: "Glassdoor",
+    tagline: "Company reviews + Easy Apply",
+    abbr: "GD",
+    color: "#0CAA41",
+    comingSoon: true,
+  },
+  {
+    id: "google_jobs",
+    name: "Google Jobs",
+    tagline: "Aggregated listings from across the web",
+    abbr: "G",
+    color: "#4285F4",
+    comingSoon: true,
+  },
+] as const;
 
-type CredentialState = { email: string; password: string; showPw: boolean; verifyStatus: VerifyStatus; verifyMsg: string };
-const blankCred = (): CredentialState => ({ email:"", password:"", showPw:false, verifyStatus:"idle", verifyMsg:"" });
+const TABS: { id: Section; label: string }[] = [
+  { id: "profile",   label: "Profile"   },
+  { id: "cv",        label: "Resume"    },
+  { id: "platforms", label: "Platforms" },
+  { id: "screening", label: "Screening" },
+];
 
 export default function SettingsPage() {
   useAuth();
 
   const [userEmail, setUserEmail] = useState("");
+  const [userName, setUserName]   = useState("");
   const [token, setToken]         = useState("");
   const [active, setActive]       = useState<Section>("profile");
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState("");
-  const [planPlatforms, setPlanPlatforms] = useState<string[]>([]);
 
   // Profile
   const [name, setName]                       = useState("");
@@ -44,16 +91,14 @@ export default function SettingsPage() {
   const [cvName, setCvName] = useState("");
   const fileRef             = useRef<HTMLInputElement>(null);
 
-  // Screening defaults
+  // Screening
   const [yearsExp, setYearsExp]         = useState("2");
   const [salary, setSalary]             = useState("800000");
   const [noticePeriod, setNoticePeriod] = useState("30");
 
-  // Credentials map: platform → state
-  const [creds, setCreds] = useState<Record<string, CredentialState>>({});
-
-  const setCredField = (platform: string, field: keyof CredentialState, value: string | boolean) =>
-    setCreds(prev => ({ ...prev, [platform]: { ...prev[platform], [field]: value } }));
+  // Platform credentials
+  const [creds, setCreds] = useState<Record<string, CredState>>({});
+  const [verifyPending, setVerifyPending] = useState<Record<string, { email: string; password: string }>>({});
 
   useEffect(() => {
     const stored = localStorage.getItem("jobrocket_user");
@@ -61,19 +106,13 @@ export default function SettingsPage() {
     if (!stored) return;
     const u = JSON.parse(stored);
     setUserEmail(u.email);
+    setUserName(u.name ?? "");
     setToken(tok);
     setName(u.name ?? "");
 
-    const hdrs = { Authorization: `Bearer ${tok}` };
-
-    // Load plan / platforms
-    fetch(`${API}/api/billing/plan/${encodeURIComponent(u.email)}`, { headers: hdrs })
-      .then(r => r.ok ? r.json() : null)
-      .then(p => { if (p?.platforms) setPlanPlatforms(p.platforms); })
-      .catch(() => setPlanPlatforms(["linkedin"]));
-
-    // Load profile + credentials
-    fetch(`${API}/api/profile/${encodeURIComponent(u.email)}`, { headers: hdrs })
+    fetch(`${API}/api/profile/${encodeURIComponent(u.email)}`, {
+      headers: { Authorization: `Bearer ${tok}` },
+    })
       .then(r => r.ok ? r.json() : null)
       .then(p => {
         if (!p) return;
@@ -82,19 +121,15 @@ export default function SettingsPage() {
         setTargetLocations((p.target_locations ?? []).join("\n"));
         setSkills((p.skills ?? []).join(", "));
         if (p.cv_path) setCvName(p.cv_path.split("/").pop() ?? "");
-        if (p.years_exp != null)    setYearsExp(String(p.years_exp));
-        if (p.salary != null)       setSalary(String(p.salary));
+        if (p.years_exp     != null) setYearsExp(String(p.years_exp));
+        if (p.salary        != null) setSalary(String(p.salary));
         if (p.notice_period != null) setNoticePeriod(String(p.notice_period));
 
-        // Populate credential state for all platforms
-        const init: Record<string, CredentialState> = {};
-        for (const plat of Object.keys(PLATFORM_META)) {
-          init[plat] = {
-            email:        p[`${plat}_email`]    ?? "",
-            password:     "",  // never returned from API for security
-            showPw:       false,
-            verifyStatus: p[`${plat}_verified`] ? "ok" : "idle",
-            verifyMsg:    p[`${plat}_verified`] ? "Verified" : "",
+        const init: Record<string, CredState> = {};
+        for (const plat of PLATFORMS) {
+          init[plat.id] = {
+            email:        p[`${plat.id}_email`]    ?? "",
+            verifyStatus: p[`${plat.id}_verified`] ? "ok" : "idle",
           };
         }
         setCreds(init);
@@ -102,24 +137,65 @@ export default function SettingsPage() {
       .catch(() => {});
   }, []);
 
-  async function verify(platform: string) {
-    const c = creds[platform];
-    if (!c?.email || !c?.password) return;
-    setCredField(platform, "verifyStatus", "checking");
-    setCredField(platform, "verifyMsg", "Checking credentials…");
-    try {
-      const res = await fetch(`${API}/api/bot/verify`, {
-        method: "POST",
+  async function handlePlatformConnect(platform: string, email: string, password: string) {
+    // Step 1: save credentials to the database
+    const saveRes = await fetch(
+      `${API}/api/profile/${encodeURIComponent(userEmail)}/credentials`,
+      {
+        method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ platform, email: c.email, password: c.password }),
-      });
-      const data = await res.json();
-      setCredField(platform, "verifyStatus", data.ok ? "ok" : "fail");
-      setCredField(platform, "verifyMsg", data.message ?? (data.ok ? "Verified" : "Failed"));
-      if (data.ok) await saveCredentials().catch(() => {});
-    } catch {
-      setCredField(platform, "verifyStatus", "fail");
-      setCredField(platform, "verifyMsg", "Could not connect to server");
+        body: JSON.stringify({
+          [`${platform}_email`]:    email,
+          [`${platform}_password`]: password,
+        }),
+      }
+    );
+    if (!saveRes.ok) {
+      const d = await saveRes.json().catch(() => ({}));
+      throw new Error(d.detail ?? d.error ?? "Could not save credentials");
+    }
+
+    // Step 2: attempt Playwright verification (sets verified=True in DB)
+    const verifyRes = await fetch(`${API}/api/bot/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ platform, email, password }),
+    });
+
+    const vd = await verifyRes.json().catch(() => ({}));
+
+    // HTTP-level error (500 = Playwright/browser exception, 4xx = bad request)
+    if (!verifyRes.ok) {
+      const msg: string = vd.detail ?? vd.error ?? "Verification error — try again";
+      throw new Error(`Credentials saved. ${msg}`);
+    }
+
+    // HTTP 200: check the "ok" field in the response body
+    if (vd.ok) {
+      setCreds(prev => ({ ...prev, [platform]: { email, verifyStatus: "ok" } }));
+      setVerifyPending(prev => { const copy = { ...prev }; delete copy[platform]; return copy; });
+    } else {
+      const msg: string = vd.message ?? "";
+      // Detect manual verification needed scenarios
+      const needsManual = 
+        msg.toLowerCase().includes("otp") ||
+        msg.toLowerCase().includes("checkpoint") ||
+        msg.toLowerCase().includes("challenge") ||
+        msg.toLowerCase().includes("manual verification");
+      
+      if (needsManual) {
+        // Set pending & keep credentials for retry
+        setVerifyPending(prev => ({ ...prev, [platform]: { email, password } }));
+        throw new Error(
+          `Credentials saved. This platform requires manual verification.\n\n` +
+          `1. Open ${email} in your browser\n` +
+          `2. Log in to ${platform}\n` +
+          `3. Complete any verification (OTP, security check)\n` +
+          `4. Come back and click Retry`
+        );
+      } else {
+        throw new Error(msg || "Verification failed — check your credentials");
+      }
     }
   }
 
@@ -134,7 +210,9 @@ export default function SettingsPage() {
     fd.append("targetLocations", targetLocations);
     if (cvFile) fd.append("cv", cvFile);
     const res = await fetch(`${API}/api/profile`, {
-      method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd,
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd,
     });
     if (!res.ok) throw new Error((await res.json()).detail ?? "Profile save failed");
     const p = await res.json();
@@ -142,18 +220,19 @@ export default function SettingsPage() {
     localStorage.setItem("jobrocket_user", JSON.stringify({ ...stored, ...p }));
   }
 
-  async function saveCredentials() {
-    const body: Record<string, string> = {};
-    for (const [plat, c] of Object.entries(creds)) {
-      if (c.email)    body[`${plat}_email`]    = c.email;
-      if (c.password) body[`${plat}_password`] = c.password;
-    }
-    const res = await fetch(`${API}/api/profile/${encodeURIComponent(userEmail)}/credentials`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
+  async function saveScreening() {
+    const fd = new FormData();
+    fd.append("email", userEmail);
+    fd.append("name", name);
+    fd.append("years_exp", yearsExp);
+    fd.append("salary", salary);
+    fd.append("notice_period", noticePeriod);
+    const res = await fetch(`${API}/api/profile`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd,
     });
-    if (!res.ok) throw new Error((await res.json()).detail ?? "Save failed");
+    if (!res.ok) throw new Error("Save failed");
   }
 
   async function handleSave(e: React.FormEvent) {
@@ -161,7 +240,7 @@ export default function SettingsPage() {
     setSaving(true); setError(""); setSaved(false);
     try {
       if (active === "profile" || active === "cv") await saveProfile();
-      else if (active === "platforms") await saveCredentials();
+      else if (active === "screening") await saveScreening();
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err: unknown) {
@@ -171,201 +250,301 @@ export default function SettingsPage() {
     }
   }
 
-  const TAB = (id: Section, label: string) => (
-    <button type="button" onClick={() => setActive(id)}
-      className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-        active === id ? "bg-indigo-600 text-white" : "text-gray-500 hover:bg-gray-100"}`}>
-      {label}
-    </button>
-  );
+  const connectedCount = Object.values(creds).filter(c => c.verifyStatus === "ok").length;
+  const showSaveButton = active !== "platforms";
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-100 h-14 flex items-center px-6 gap-4 sticky top-0 z-10">
-        <Link href="/dashboard" className="text-gray-400 hover:text-gray-700 text-sm transition">← Dashboard</Link>
-        <h1 className="text-base font-semibold text-gray-900">Settings</h1>
-      </header>
+    <div className="min-h-screen bg-[#F5F0EA]">
 
-      <div className="max-w-2xl mx-auto px-5 py-8">
-        <div className="flex gap-2 mb-6 bg-white border border-gray-100 rounded-xl p-1.5 overflow-x-auto">
-          {TAB("profile",   "Profile")}
-          {TAB("cv",        "CV Upload")}
-          {TAB("platforms", "Platforms")}
-          {TAB("screening", "Screening")}
+      {/* ── Gradient Hero Header ── */}
+      <div
+        className="relative overflow-hidden"
+        style={{ background: "linear-gradient(160deg, #1C1410 0%, #2A1C12 55%, #3E2416 100%)" }}
+      >
+        {/* Dot grid texture */}
+        <div
+          className="absolute inset-0 opacity-[0.07]"
+          style={{
+            backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.8) 1px, transparent 1px)",
+            backgroundSize: "18px 18px",
+          }}
+        />
+
+        <div className="relative max-w-xl mx-auto px-4 pt-5 pb-8">
+          {/* Back nav */}
+          <div className="flex items-center gap-3 mb-5">
+            <Link
+              href="/dashboard"
+              className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/10 text-white hover:bg-white/20 transition"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M10 12L6 8l4-4" />
+              </svg>
+            </Link>
+            <span className="text-white/40 text-sm">Dashboard</span>
+          </div>
+
+          {/* Title row */}
+          <div className="flex items-end justify-between">
+            <div>
+              <h1 className="text-[22px] font-bold text-white tracking-tight">Settings</h1>
+              {userEmail && (
+                <p className="text-white/45 text-[13px] mt-0.5">{userEmail}</p>
+              )}
+            </div>
+            {connectedCount > 0 && (
+              <div className="flex items-center gap-1.5 bg-white/10 rounded-full px-3 py-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                <span className="text-white/80 text-[12px] font-medium">
+                  {connectedCount} ready
+                </span>
+              </div>
+            )}
+          </div>
         </div>
+      </div>
 
-        <form onSubmit={handleSave} className="space-y-5">
+      {/* ── Floating Tab Bar ── */}
+      <div className="max-w-xl mx-auto px-4 -mt-4 relative z-10 mb-5">
+        <div className="flex gap-1 bg-white rounded-2xl p-1 shadow-[0_4px_20px_rgba(0,0,0,0.10),0_1px_4px_rgba(0,0,0,0.06)]">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActive(t.id)}
+              className={[
+                "flex-1 min-w-[64px] px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all duration-150 whitespace-nowrap",
+                active === t.id
+                  ? "bg-[#1C1410] text-white shadow-sm"
+                  : "text-[#A89F96] hover:text-[#1C1917]",
+              ].join(" ")}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Content ── */}
+      <div className="max-w-xl mx-auto px-4 pb-10">
+        <form onSubmit={handleSave} className="space-y-4">
 
           {/* ── PROFILE ── */}
           {active === "profile" && (
-            <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
-              <h2 className="font-semibold text-gray-900">Your profile</h2>
-              <p className="text-xs text-gray-400 -mt-1">Used to fill your name, phone, and tailor applications.</p>
+            <section className="bg-white rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.04)] p-6 space-y-5">
+              <div>
+                <h2 className="font-semibold text-[#1C1917] text-[15px]">Your profile</h2>
+                <p className="text-[13px] text-[#A89F96] mt-1 leading-relaxed">Used to tailor applications and auto-fill your name &amp; contact.</p>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={LBL}>Full name</label>
                   <input value={name} onChange={e => setName(e.target.value)} required className={INPUT} placeholder="Your name" />
                 </div>
                 <div>
-                  <label className={LBL}>Phone number</label>
-                  <input value={phone} onChange={e => setPhone(e.target.value)} className={INPUT} placeholder="+91 9876543210" />
+                  <label className={LBL}>Phone</label>
+                  <input value={phone} onChange={e => setPhone(e.target.value)} className={INPUT} placeholder="+974 50 000 000" />
                 </div>
               </div>
+
               <div>
-                <label className={LBL}>Target job titles <span className="text-gray-300">(comma-separated)</span></label>
+                <label className={LBL}>Target job titles <span className="text-[#C4BDB5] font-normal">(comma-separated)</span></label>
                 <input value={targetTitles} onChange={e => setTargetTitles(e.target.value)} className={INPUT}
                   placeholder="React Developer, Frontend Engineer" />
               </div>
+
               <div>
-                <label className={LBL}>Target locations <span className="text-gray-300">(one per line)</span></label>
+                <label className={LBL}>Target locations <span className="text-[#C4BDB5] font-normal">(one per line)</span></label>
                 <textarea value={targetLocations} onChange={e => setTargetLocations(e.target.value)}
-                  rows={4} className={INPUT + " resize-none"}
+                  rows={3} className={INPUT + " resize-none"}
                   placeholder={"Doha, Qatar\nDubai, UAE\nRemote"} />
-                <p className="text-xs text-gray-400 mt-1">One location per line. "City, Country" format works best.</p>
               </div>
+
               <div>
-                <label className={LBL}>Skills <span className="text-gray-300">(comma-separated)</span></label>
+                <label className={LBL}>Skills <span className="text-[#C4BDB5] font-normal">(comma-separated)</span></label>
                 <input value={skills} onChange={e => setSkills(e.target.value)} className={INPUT}
                   placeholder="React, TypeScript, Node.js" />
               </div>
-            </div>
+            </section>
           )}
 
-          {/* ── CV ── */}
+          {/* ── RESUME ── */}
           {active === "cv" && (
-            <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
-              <h2 className="font-semibold text-gray-900">Upload your CV</h2>
-              <p className="text-xs text-gray-400 -mt-1">PDF only. The bot attaches this to every application.</p>
-              <div onClick={() => fileRef.current?.click()}
-                className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition
-                  ${cvFile || cvName ? "border-indigo-300 bg-indigo-50" : "border-gray-200 hover:border-indigo-300 hover:bg-gray-50"}`}>
+            <section className="bg-white rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.04)] p-6 space-y-5">
+              <div>
+                <h2 className="font-semibold text-[#1C1917] text-[15px]">Your resume</h2>
+                <p className="text-[13px] text-[#A89F96] mt-1 leading-relaxed">PDF only. Attached to every application automatically.</p>
+              </div>
+
+              <div
+                onClick={() => fileRef.current?.click()}
+                className={[
+                  "border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all duration-200",
+                  cvFile || cvName
+                    ? "border-[#1C1917]/25 bg-[#F8F4EF]"
+                    : "border-[#DDD7CF] hover:border-[#1C1917]/30 hover:bg-[#F8F4EF]",
+                ].join(" ")}
+              >
                 <input ref={fileRef} type="file" accept=".pdf" className="hidden"
                   onChange={e => { const f = e.target.files?.[0]; if (f) { setCvFile(f); setCvName(f.name); } }} />
+
                 {cvFile || cvName ? (
-                  <><div className="text-3xl mb-2">📄</div>
-                  <p className="text-sm font-medium text-indigo-700">{cvName}</p>
-                  <p className="text-xs text-indigo-400 mt-1">Click to replace</p></>
+                  <>
+                    <div className="mx-auto mb-3 w-12 h-12 rounded-xl bg-[#EDE9E3] flex items-center justify-center">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1C1917" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                      </svg>
+                    </div>
+                    <p className="text-[14px] font-semibold text-[#1C1917]">{cvName}</p>
+                    <p className="text-[12px] text-[#A89F96] mt-1">Click to replace</p>
+                  </>
                 ) : (
-                  <><div className="text-3xl mb-2">☁️</div>
-                  <p className="text-sm font-medium text-gray-700">Click to upload your CV</p>
-                  <p className="text-xs text-gray-400 mt-1">PDF · Max 10MB</p></>
+                  <>
+                    <div className="mx-auto mb-3 w-12 h-12 rounded-xl bg-[#F0EDE8] flex items-center justify-center">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#A89F96" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/>
+                      </svg>
+                    </div>
+                    <p className="text-[14px] font-semibold text-[#1C1917]">Upload your CV</p>
+                    <p className="text-[12px] text-[#A89F96] mt-1">PDF · Max 10 MB</p>
+                  </>
                 )}
               </div>
-            </div>
+            </section>
           )}
 
           {/* ── PLATFORMS ── */}
           {active === "platforms" && (
-            <div className="space-y-4">
-              <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 text-sm text-indigo-800">
-                Add credentials for each job platform. The bot will only run platforms marked <strong>Verified</strong>.
+            <div className="space-y-3">
+              {/* Section header */}
+              <div className="bg-white rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+                {/* Gradient accent bar */}
+                <div
+                  className="h-1.5 w-full"
+                  style={{ background: "linear-gradient(90deg, #0A66C2, #2164F3, #C1272D, #EA4335)" }}
+                />
+                <div className="px-5 py-4">
+                  <h2 className="font-semibold text-[#1C1917] text-[15px]">Connected platforms</h2>
+                  <p className="text-[13px] text-[#A89F96] mt-1 leading-relaxed">
+                    The bot applies automatically on active platforms. Click Connect to activate.
+                  </p>
+                </div>
               </div>
-              {planPlatforms.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-6">Loading your plan platforms…</p>
-              )}
-              {planPlatforms.map(plat => {
-                const meta = PLATFORM_META[plat];
-                if (!meta) return null;
-                const c = creds[plat] ?? blankCred();
-                const badge = {
-                  idle:     { cls: "bg-gray-100 text-gray-500",   icon: "○", text: "Not verified" },
-                  checking: { cls: "bg-yellow-50 text-yellow-600", icon: "⟳", text: "Checking…" },
-                  ok:       { cls: "bg-green-50 text-green-700",   icon: "✓", text: c.verifyMsg || "Verified" },
-                  fail:     { cls: "bg-red-50 text-red-600",       icon: "✕", text: c.verifyMsg || "Failed" },
-                }[c.verifyStatus];
 
-                return (
-                  <div key={plat} className="bg-white rounded-2xl border border-gray-100 p-5 space-y-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className={`w-8 h-8 rounded ${meta.color} flex items-center justify-center text-white text-xs font-bold shrink-0`}>
-                        {meta.abbr}
-                      </div>
-                      <div className="min-w-0">
-                        <h3 className="font-semibold text-gray-900 text-sm">{meta.label}</h3>
-                        <p className="text-xs text-gray-400">{meta.subtitle}</p>
-                      </div>
-                      <span className={`ml-auto flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium shrink-0 ${badge.cls}`}>
-                        <span>{badge.icon}</span> {badge.text}
-                      </span>
-                    </div>
+              {/* Active platforms */}
+              <div className="space-y-2.5">
+                {PLATFORMS.filter(p => !("comingSoon" in p)).map(p => {
+                  const isReady = creds[p.id]?.verifyStatus === "ok";
+                  const isPending = verifyPending[p.id] !== undefined;
+                  const status: PlatformStatus = isReady ? "ready" : isPending ? "verify_pending" : "idle";
+                  return (
+                    <PlatformCard
+                      key={p.id}
+                      id={p.id}
+                      name={p.name}
+                      tagline={p.tagline}
+                      abbr={p.abbr}
+                      brandColor={p.color}
+                      status={status}
+                      email={verifyPending[p.id]?.email || creds[p.id]?.email}
+                      onConnect={handlePlatformConnect}
+                      onRetryVerify={handlePlatformConnect}
+                    />
+                  );
+                })}
+              </div>
 
-                    <div>
-                      <label className={LBL}>Email</label>
-                      <input type="email" value={c.email}
-                        onChange={e => setCredField(plat, "email", e.target.value)}
-                        className={INPUT} placeholder={`your@email.com`} />
-                    </div>
+              {/* Coming soon divider */}
+              <div className="flex items-center gap-3 px-1 pt-2">
+                <div className="h-px flex-1 bg-[#E8E2DA]" />
+                <span className="text-[11px] font-semibold text-[#C0B8AF] uppercase tracking-widest">
+                  Coming soon
+                </span>
+                <div className="h-px flex-1 bg-[#E8E2DA]" />
+              </div>
 
-                    <div>
-                      <label className={LBL}>Password</label>
-                      <div className="relative">
-                        <input type={c.showPw ? "text" : "password"} value={c.password}
-                          onChange={e => setCredField(plat, "password", e.target.value)}
-                          className={INPUT + " pr-14"} placeholder="••••••••" />
-                        <button type="button" onClick={() => setCredField(plat, "showPw", !c.showPw)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-700">
-                          {c.showPw ? "Hide" : "Show"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {c.verifyStatus === "fail" && (
-                      <div className="px-3 py-2.5 rounded-xl bg-red-50 border border-red-100 text-xs text-red-600">
-                        {c.verifyMsg}
-                      </div>
-                    )}
-
-                    {["linkedin","indeed","glassdoor"].includes(plat) && (
-                      <button type="button" onClick={() => verify(plat)}
-                        disabled={!c.email || !c.password || c.verifyStatus === "checking"}
-                        className="w-full border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed font-medium py-2.5 rounded-xl transition text-sm">
-                        {c.verifyStatus === "checking" ? "Verifying account…" : `Verify ${meta.label} account`}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+              {/* Coming-soon platforms */}
+              <div className="space-y-2.5">
+                {PLATFORMS.filter(p => "comingSoon" in p && p.comingSoon).map(p => (
+                  <PlatformCard
+                    key={p.id}
+                    id={p.id}
+                    name={p.name}
+                    tagline={p.tagline}
+                    abbr={p.abbr}
+                    brandColor={p.color}
+                    status="coming_soon"
+                    onConnect={handlePlatformConnect}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
           {/* ── SCREENING ── */}
           {active === "screening" && (
-            <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
-              <h2 className="font-semibold text-gray-900">Screening question defaults</h2>
-              <p className="text-xs text-gray-400 -mt-1">Used to auto-answer common application questions.</p>
+            <section className="bg-white rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.04)] p-6 space-y-5">
+              <div>
+                <h2 className="font-semibold text-[#1C1917] text-[15px]">Screening defaults</h2>
+                <p className="text-[13px] text-[#A89F96] mt-1 leading-relaxed">Auto-fills common application questions.</p>
+              </div>
+
               <div>
                 <label className={LBL}>Years of experience</label>
                 <input type="number" min="0" max="40" value={yearsExp}
                   onChange={e => setYearsExp(e.target.value)} className={INPUT} />
               </div>
+
               <div>
-                <label className={LBL}>Expected salary (₹ per year)</label>
+                <label className={LBL}>Expected salary <span className="text-[#C4BDB5] font-normal">(₹ per year)</span></label>
                 <input type="number" value={salary}
                   onChange={e => setSalary(e.target.value)} className={INPUT} placeholder="800000" />
-                <p className="text-xs text-gray-400 mt-1">e.g. 800000 = ₹8 LPA</p>
+                <p className="text-[12px] text-[#B0A89E] mt-1.5">e.g. 800000 = ₹8 LPA</p>
               </div>
+
               <div>
-                <label className={LBL}>Notice period (days)</label>
+                <label className={LBL}>Notice period <span className="text-[#C4BDB5] font-normal">(days)</span></label>
                 <input type="number" min="0" value={noticePeriod}
                   onChange={e => setNoticePeriod(e.target.value)} className={INPUT} placeholder="30" />
               </div>
-              <p className="text-xs text-gray-400">These values are used to fill form fields automatically during job applications.</p>
+            </section>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="px-4 py-3 rounded-xl bg-[#FEF5F2] border border-[#FDDDD5] text-[13px] text-[#C0392B] leading-snug">
+              {error}
             </div>
           )}
 
-          {error && (
-            <div className="px-4 py-3 rounded-xl bg-red-50 border border-red-100 text-sm text-red-600">{error}</div>
+          {/* Save button */}
+          {showSaveButton && (
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-4 rounded-2xl text-[14px] font-semibold text-white
+                disabled:opacity-50 transition-all duration-200 active:scale-[0.98]"
+              style={{
+                background: saving || saved
+                  ? "#7A716B"
+                  : "linear-gradient(135deg, #1C1917 0%, #3E2416 100%)",
+                boxShadow: "0 4px 20px rgba(28,25,23,0.25), 0 1px 4px rgba(28,25,23,0.15)",
+              }}
+            >
+              {saving ? "Saving…" : saved ? "✓ Saved" : "Save changes"}
+            </button>
           )}
-
-          <button type="submit" disabled={saving}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition text-sm">
-            {saving ? "Saving…" : saved ? "✓ Saved!" : "Save"}
-          </button>
         </form>
       </div>
     </div>
   );
 }
 
-const INPUT = "w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-indigo-400 transition bg-white";
-const LBL   = "block text-xs font-medium text-gray-500 mb-1.5";
+const INPUT = [
+  "w-full border border-[#EDE9E3] rounded-xl px-4 py-3 text-[14px] outline-none",
+  "focus:border-[#1C1917] focus:shadow-[0_0_0_3px_rgba(28,25,23,0.07)]",
+  "bg-[#FAFAF8] placeholder:text-[#C4BDB5] transition-all duration-150",
+].join(" ");
+
+const LBL = "block text-[12px] font-semibold text-[#A89F96] mb-1.5 uppercase tracking-wide";
