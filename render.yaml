@@ -60,6 +60,15 @@ services:
         sync: false
       - key: TWILIO_WHATSAPP_FROM
         value: "whatsapp:+14155238886"
+      # Runtime mode
+      - key: ENV
+        value: production
+      # Kill-switch (set to "true" to disable bot automation globally)
+      - key: BOT_DISABLED
+        value: "false"
+      # Admin API key for /admin/* endpoints
+      - key: ADMIN_API_KEY
+        sync: false
 
 databases:
   - name: jobrocket-db
