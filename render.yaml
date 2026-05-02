@@ -17,7 +17,7 @@ services:
         fromService:
           name: jobrocket-redis
           type: redis
-          property: externalConnectionString
+          property: internalConnectionString
       # Auth
       - key: JWT_SECRET
         generateValue: true
