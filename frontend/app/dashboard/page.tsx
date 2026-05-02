@@ -164,6 +164,9 @@ export default function DashboardPage() {
             </p>
           </div>
           <div className="flex items-center gap-4">
+            <Link href="/scoring" className="text-sm font-medium text-emerald-600 hover:text-emerald-800">
+              Smart Scoring
+            </Link>
             <Link href="/resume" className="text-sm font-medium text-purple-600 hover:text-purple-800">
               Resume Builder
             </Link>

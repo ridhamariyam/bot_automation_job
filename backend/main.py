@@ -10,14 +10,17 @@ v2 changes:
 import os
 import logging
 import time
+import uuid as _uuid
 from datetime import datetime
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 load_dotenv()
+
+IS_PROD: bool = os.getenv("ENV", "development").lower() in ("production", "prod")
 
 # ── Rate limiting ──────────────────────────────────────────────────────────────
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -37,8 +40,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="JobRocket API",
     version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if IS_PROD else "/docs",
+    redoc_url=None if IS_PROD else "/redoc",
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -69,31 +72,45 @@ app.add_middleware(
     max_age=3600,
 )
 
+# ── Request-ID middleware ──────────────────────────────────────────────────────
+@app.middleware("http")
+async def attach_request_id(request: Request, call_next):
+    rid = request.headers.get("X-Request-ID") or str(_uuid.uuid4())[:8]
+    request.state.request_id = rid
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = rid
+    return response
+
+
 # ── Logging middleware ─────────────────────────────────────────────────────────
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     t0 = time.time()
     origin = request.headers.get("origin", "-")
     logger.info("→ %s %s  origin=%s", request.method, request.url.path, origin)
+    rid = getattr(request.state, "request_id", "-")
     try:
         resp = await call_next(request)
         ms = (time.time() - t0) * 1000
-        logger.info("← %s %s  status=%s  %.0fms", request.method, request.url.path, resp.status_code, ms)
+        logger.info("← [%s] %s %s  status=%s  %.0fms", rid, request.method, request.url.path, resp.status_code, ms)
         return resp
     except Exception as exc:
         ms = (time.time() - t0) * 1000
-        logger.error("✗ %s %s  %.0fms  %s", request.method, request.url.path, ms, exc, exc_info=True)
+        logger.error("✗ [%s] %s %s  %.0fms  %s", rid, request.method, request.url.path, ms, exc, exc_info=True)
         raise
 
 # ── Exception handlers ─────────────────────────────────────────────────────────
 @app.exception_handler(Exception)
 async def global_exc(request: Request, exc: Exception):
     origin = request.headers.get("origin", "*")
-    logger.error("UNHANDLED %s %s — %s", request.method, request.url.path, exc, exc_info=True)
+    rid = getattr(request.state, "request_id", "-")
+    logger.error("UNHANDLED [%s] %s %s — %s", rid, request.method, request.url.path, exc, exc_info=True)
+    # Never expose internal error details in production
+    detail = "An unexpected error occurred" if IS_PROD else str(exc)
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal Server Error", "detail": str(exc),
-                 "timestamp": datetime.utcnow().isoformat()},
+        content={"error": "Internal Server Error", "detail": detail,
+                 "request_id": rid, "timestamp": datetime.utcnow().isoformat()},
         headers={"Access-Control-Allow-Origin": origin,
                  "Access-Control-Allow-Credentials": "true"},
     )
@@ -109,7 +126,7 @@ async def http_exc(request: Request, exc: HTTPException):
     )
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-from routers import auth, profile, jobs, bot, billing, feedback, recruiter, resume
+from routers import auth, profile, jobs, bot, billing, feedback, recruiter, resume, scoring
 
 app.include_router(auth.router,      prefix="/api/auth",      tags=["auth"])
 app.include_router(profile.router,   prefix="/api/profile",   tags=["profile"])
@@ -119,12 +136,15 @@ app.include_router(billing.router,   prefix="/api/billing",   tags=["billing"])
 app.include_router(feedback.router,  prefix="/api/feedback",  tags=["feedback"])
 app.include_router(recruiter.router, prefix="/api/recruiter", tags=["recruiter"])
 app.include_router(resume.router,    prefix="/api/resume",    tags=["resume"])
+app.include_router(scoring.router,   prefix="/api/scoring",   tags=["scoring"])
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def on_startup():
     logger.info("=" * 70)
-    logger.info("JobRocket API v2 starting")
+    logger.info("JobRocket API v2 starting  [ENV=%s]", "production" if IS_PROD else "development")
+
+    _validate_env()
 
     # Create all tables (new ones added in v2 schema)
     from database import init_db
@@ -134,8 +154,33 @@ async def on_startup():
     # Migrate existing deployments: add any missing columns gracefully
     _migrate_existing_schema()
 
+    from utils.feature_flags import is_bot_disabled
+    logger.info("Bot kill-switch: %s", "DISABLED" if is_bot_disabled() else "enabled")
     logger.info("Ready — %d CORS origins + *.vercel.app", len(ALLOWED_ORIGINS))
     logger.info("=" * 70)
+
+
+def _validate_env():
+    """Warn loudly about missing or insecure configuration."""
+    insecure_jwt_default = "change-me-in-production-set-JWT_SECRET-env-var"
+    jwt_secret = os.getenv("JWT_SECRET", insecure_jwt_default)
+
+    if jwt_secret == insecure_jwt_default:
+        if IS_PROD:
+            logger.error("CRITICAL: JWT_SECRET is not set — using insecure default. Set JWT_SECRET immediately!")
+        else:
+            logger.warning("JWT_SECRET not set — using insecure default (OK for dev only)")
+
+    recommended = {
+        "DATABASE_URL":    "PostgreSQL connection string",
+        "JWT_SECRET":      "JWT signing secret",
+        "ENCRYPTION_KEY":  "Fernet key for credential encryption",
+        "OPENAI_API_KEY":  "OpenAI API key for scoring",
+    }
+    for key, desc in recommended.items():
+        if not os.getenv(key):
+            level = logger.error if IS_PROD and key in ("DATABASE_URL", "JWT_SECRET") else logger.warning
+            level("Missing env var: %s (%s)", key, desc)
 
 
 def _migrate_existing_schema():
@@ -169,6 +214,11 @@ def _migrate_existing_schema():
         ("bot_logs", "user_id",   "ALTER TABLE bot_logs ADD COLUMN user_id VARCHAR"),
         ("bot_logs", "task_id",   "ALTER TABLE bot_logs ADD COLUMN task_id VARCHAR"),
         ("bot_logs", "platform",  "ALTER TABLE bot_logs ADD COLUMN platform VARCHAR"),
+        # v3: scoring columns
+        ("job_applications", "score",           "ALTER TABLE job_applications ADD COLUMN score INTEGER"),
+        ("job_applications", "score_breakdown", "ALTER TABLE job_applications ADD COLUMN score_breakdown TEXT"),
+        ("job_applications", "outcome",         "ALTER TABLE job_applications ADD COLUMN outcome VARCHAR"),
+        ("job_applications", "outcome_at",      "ALTER TABLE job_applications ADD COLUMN outcome_at TIMESTAMP"),
     ]
 
     with engine.begin() as conn:
@@ -250,10 +300,43 @@ def db_check():
 
 
 @app.post("/migrate/add-trial-columns")
-def migrate_legacy(api_key: str = None):
-    """Legacy migration endpoint — kept for backward compatibility."""
+def migrate_legacy(x_migration_key: str | None = Header(None)):
+    """Legacy migration endpoint — key passed via X-Migration-Key header (not query string)."""
     key = os.getenv("MIGRATION_API_KEY")
-    if key and api_key != key:
+    if key and x_migration_key != key:
         return JSONResponse(status_code=403, content={"error": "Unauthorized"})
     _migrate_existing_schema()
     return {"status": "ok", "message": "Migration complete"}
+
+
+# ── Kill-switch admin endpoint ─────────────────────────────────────────────────
+
+@app.post("/admin/kill-switch")
+def toggle_kill_switch(
+    disabled: bool,
+    x_admin_key: str | None = Header(None),
+):
+    """
+    Toggle the bot kill-switch at runtime without redeployment.
+    Requires X-Admin-Key header matching ADMIN_API_KEY env var.
+    """
+    key = os.getenv("ADMIN_API_KEY")
+    if not key:
+        raise HTTPException(503, "Admin API not configured (set ADMIN_API_KEY)")
+    if x_admin_key != key:
+        raise HTTPException(403, "Unauthorized")
+
+    from utils.feature_flags import set_bot_disabled, get_all
+    set_bot_disabled(disabled)
+    logger.warning("Kill-switch toggled — bot_disabled=%s", disabled)
+    return {"flags": get_all(), "updated_by": "admin"}
+
+
+@app.get("/admin/flags")
+def get_flags(x_admin_key: str | None = Header(None)):
+    """Read current feature flags."""
+    key = os.getenv("ADMIN_API_KEY")
+    if not key or x_admin_key != key:
+        raise HTTPException(403, "Unauthorized")
+    from utils.feature_flags import get_all
+    return {"flags": get_all()}

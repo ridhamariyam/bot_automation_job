@@ -97,6 +97,14 @@ def _check_daily_limit(user_email: str, plan: str, db) -> tuple[int, int, int]:
 # ── Start ──────────────────────────────────────────────────────────────────────
 @router.post("/start")
 async def start_bot(body: StartIn):
+    from utils.feature_flags import is_bot_disabled
+    if is_bot_disabled():
+        raise HTTPException(503, "Bot automation is temporarily disabled. Please try again later.")
+
+    # Cap max_jobs to a safe upper bound
+    if body.max_jobs is not None and body.max_jobs > 500:
+        raise HTTPException(400, "max_jobs cannot exceed 500 per run")
+
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == body.email).first()
         if not user:
@@ -266,28 +274,19 @@ async def verify_platform(body: VerifyIn):
     On success, marks PlatformCredential.verified = True.
     """
     try:
-        from playwright.async_api import async_playwright
+        from bot.browser.stealth_browser import StealthBrowser  # noqa: F401
     except ImportError:
-        raise HTTPException(500, "Playwright not installed on this server")
+        raise HTTPException(500, "Playwright / bot package not installed on this server")
 
     platform = body.platform.lower()
     if platform not in ("linkedin", "indeed", "glassdoor"):
         raise HTTPException(400, f"Unsupported platform for verification: {platform}")
 
     async def _check() -> tuple[bool, str]:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=CHROMIUM_ARGS)
-            ctx = await browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1366, "height": 768},
-            )
-            await ctx.add_init_script(
-                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
-                "window.chrome={runtime:{}};"
-            )
-            page = await ctx.new_page()
-            try:
+        from bot.browser.stealth_browser import StealthBrowser
+        ctx, sb = await StealthBrowser.one_shot_context()
+        page = await ctx.new_page()
+        try:
                 if platform == "linkedin":
                     await page.goto("https://www.linkedin.com/login",
                                     wait_until="domcontentloaded", timeout=20000)
@@ -346,8 +345,9 @@ async def verify_platform(body: VerifyIn):
 
                 return False, "Unknown platform"
 
-            finally:
-                await browser.close()
+        finally:
+            await page.close()
+            await sb.shutdown()
 
     try:
         ok, message = await _check()

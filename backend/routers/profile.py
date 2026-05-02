@@ -159,9 +159,12 @@ def update_credentials(email: str, body: CredentialsIn):
                 user_email=email, platform=platform
             ).first()
             if cred:
+                email_changed = cred.email != plat_email
                 cred.email              = plat_email
                 cred.encrypted_password = encrypt_password(plat_pass)
-                cred.verified           = False
+                if email_changed:
+                    cred.verified = False
+                # else: preserve existing verified status
             else:
                 db.add(PlatformCredential(
                     user_email         = email,
@@ -173,9 +176,12 @@ def update_credentials(email: str, body: CredentialsIn):
 
             # --- Also write to legacy flat columns (bot runner reads these) ---
             if hasattr(user, f"{platform}_email"):
+                email_changed = getattr(user, f"{platform}_email") != plat_email
                 setattr(user, f"{platform}_email",    plat_email)
                 setattr(user, f"{platform}_password", plat_pass)
-                setattr(user, f"{platform}_verified", 0)
+                if email_changed:
+                    setattr(user, f"{platform}_verified", 0)
+                # else: preserve existing verified status
 
         db.commit()
 

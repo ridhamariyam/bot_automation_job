@@ -2,24 +2,30 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Literal
-from fastapi import APIRouter, HTTPException
+from typing import Literal, Optional
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel
 from database import SessionLocal, JobApplication
+from middleware.auth import require_self
 
 router = APIRouter()
 
+# Hard cap — prevents unbounded queries on large accounts
+_JOB_QUERY_LIMIT = 1000
+
 
 class JobIn(BaseModel):
-    user_email: str
-    title: str
-    company: str
-    location: str = ""
-    platform: str
-    job_url: str = ""
-    status: str = "Applied"
-    proof: str = ""
+    user_email:      str
+    title:           str
+    company:         str
+    location:        str = ""
+    platform:        str
+    job_url:         str = ""
+    status:          str = "Applied"
+    proof:           str = ""
+    score:           Optional[int] = None
+    score_breakdown: Optional[str] = None
 
 
 class StatusIn(BaseModel):
@@ -27,11 +33,11 @@ class StatusIn(BaseModel):
 
 
 @router.get("/stats/{user_email}")
-def get_stats(user_email: str):
+def get_stats(user_email: str, _: str = Depends(require_self)):
     with SessionLocal() as db:
         jobs = db.query(JobApplication).filter(
             JobApplication.user_email == user_email
-        ).all()
+        ).limit(_JOB_QUERY_LIMIT).all()
         total = len(jobs)
         by_status = {}
         by_platform = {}
@@ -46,11 +52,15 @@ def get_stats(user_email: str):
 
 
 @router.get("/{user_email}")
-def list_jobs(user_email: str):
+def list_jobs(user_email: str, _: str = Depends(require_self)):
     with SessionLocal() as db:
-        jobs = db.query(JobApplication).filter(
-            JobApplication.user_email == user_email
-        ).order_by(JobApplication.applied_at.desc()).all()
+        jobs = (
+            db.query(JobApplication)
+            .filter(JobApplication.user_email == user_email)
+            .order_by(JobApplication.applied_at.desc())
+            .limit(_JOB_QUERY_LIMIT)
+            .all()
+        )
         return [_fmt(j) for j in jobs]
 
 
@@ -58,16 +68,18 @@ def list_jobs(user_email: str):
 def add_job(job: JobIn):
     with SessionLocal() as db:
         record = JobApplication(
-            id=str(uuid.uuid4()),
-            user_email=job.user_email,
-            title=job.title,
-            company=job.company,
-            location=job.location,
-            platform=job.platform,
-            job_url=job.job_url,
-            status=job.status,
-            applied_at=datetime.utcnow(),
-            proof=job.proof,
+            id              = str(uuid.uuid4()),
+            user_email      = job.user_email,
+            title           = job.title,
+            company         = job.company,
+            location        = job.location,
+            platform        = job.platform,
+            job_url         = job.job_url,
+            status          = job.status,
+            applied_at      = datetime.utcnow(),
+            proof           = job.proof,
+            score           = job.score,
+            score_breakdown = job.score_breakdown,
         )
         db.add(record)
         db.commit()
@@ -161,6 +173,9 @@ def _fmt(j: JobApplication) -> dict:
         "status":         j.status,
         "applied_at":     j.applied_at.isoformat() if j.applied_at else None,
         "proof":          j.proof,
+        "score":          j.score,
+        "score_breakdown": j.score_breakdown,
+        "outcome":        j.outcome,
         "has_cover_letter":    bool(j.cover_letter),
         "has_tailored_resume": bool(j.tailored_resume),
     }
