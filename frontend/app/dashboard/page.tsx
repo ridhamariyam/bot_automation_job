@@ -22,6 +22,11 @@ type Job = {
 
 const API = process.env.NEXT_PUBLIC_API_URL as string;
 
+function parseExpiredPlatform(message: string) {
+  const match = message.match(/SESSION_EXPIRED:([a-z_]+)/i);
+  return match?.[1]?.toLowerCase() ?? "";
+}
+
 async function apiFetch(path: string) {
   const token = localStorage.getItem("token");
   const res = await fetch(`${API}${path}`, {
@@ -65,25 +70,6 @@ function StatCard({
       </div>
       <p className="text-[28px] font-bold text-[#1A1714] leading-none tabular-nums">{value}</p>
     </div>
-  );
-}
-
-// ── Ambient illustration for the connect banner ──
-function ConnectIllustration() {
-  return (
-    <svg width="52" height="52" viewBox="0 0 52 52" fill="none" aria-hidden="true">
-      <rect width="52" height="52" rx="15" fill="rgba(255,255,255,0.12)" />
-      {/* links / nodes */}
-      <circle cx="26" cy="14" r="5" fill="rgba(255,255,255,0.30)" />
-      <circle cx="14" cy="34" r="4" fill="rgba(255,255,255,0.22)" />
-      <circle cx="38" cy="34" r="4" fill="rgba(255,255,255,0.22)" />
-      <line x1="26" y1="19" x2="14" y2="30" stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" />
-      <line x1="26" y1="19" x2="38" y2="30" stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" />
-      <line x1="14" y1="34" x2="38" y2="34" stroke="rgba(255,255,255,0.14)" strokeWidth="1.5" />
-      {/* plus icon in center */}
-      <line x1="26" y1="30" x2="26" y2="40" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" />
-      <line x1="21" y1="35" x2="31" y2="35" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -145,10 +131,10 @@ export default function DashboardPage() {
     })
       .then((r) => (r.ok ? r.json() : null))
       .then((p) => {
-        const connected =
+        const connected = Boolean(
           p?.linkedin_verified ||
-          p?.indeed_verified   ||
-          p?.linkedin_email;
+          p?.indeed_verified
+        );
         setCredentialsMissing(!connected);
         refreshData(u.email);
       })
@@ -187,7 +173,16 @@ export default function DashboardPage() {
         setBotRunning(true);
       }
     } catch (err: unknown) {
-      setBotError(err instanceof Error ? err.message : "Error");
+      const message = err instanceof Error ? err.message : "Error";
+      const expiredPlatform = parseExpiredPlatform(message);
+
+      if (expiredPlatform) {
+        setCredentialsMissing(true);
+        router.push(`/settings?tab=platforms&expired=${encodeURIComponent(expiredPlatform)}`);
+        return;
+      }
+
+      setBotError(message);
     } finally {
       setBotLoading(false);
     }
@@ -264,7 +259,7 @@ export default function DashboardPage() {
                 {botRunning
                   ? "Your bot is running — applications are being submitted."
                   : credentialsMissing
-                  ? "Connect LinkedIn or Indeed to start applying automatically."
+                  ? "Connect LinkedIn or Indeed via browser to start applying automatically."
                   : "Ready to launch — start the bot when you're set."}
               </p>
             </div>
@@ -306,7 +301,7 @@ export default function DashboardPage() {
                 Connect a platform to start applying
               </p>
               <p className="text-[13px] text-[#A89F97] mt-1 leading-relaxed">
-                Link LinkedIn or Indeed — the bot applies to matching jobs automatically.
+                Connect LinkedIn or Indeed via browser and the bot will apply to matching jobs automatically.
               </p>
               <Link
                 href="/settings"

@@ -131,9 +131,13 @@ class User(Base):
     linkedin_email      = Column(String, nullable=True)
     linkedin_password   = Column(String, nullable=True)
     linkedin_verified   = Column(Integer, default=0)
+    linkedin_session_json = Column(Text, nullable=True)
+    linkedin_session_updated_at = Column(DateTime, nullable=True)
     indeed_email        = Column(String, nullable=True)
     indeed_password     = Column(String, nullable=True)
     indeed_verified     = Column(Integer, default=0)
+    indeed_session_json = Column(Text, nullable=True)
+    indeed_session_updated_at = Column(DateTime, nullable=True)
     glassdoor_email     = Column(String, nullable=True)
     glassdoor_password  = Column(String, nullable=True)
     glassdoor_verified  = Column(Integer, default=0)
@@ -211,6 +215,12 @@ class JobApplication(Base):
     proof           = Column(Text, nullable=True)
     tailored_resume = Column(Text, nullable=True)
     cover_letter    = Column(Text, nullable=True)
+
+    # Scoring fields (added v3)
+    score           = Column(Integer, nullable=True)       # 0-100
+    score_breakdown = Column(Text, nullable=True)          # JSON: ScoreResult dict
+    outcome         = Column(String, nullable=True)        # reply|interview|offer|rejected
+    outcome_at      = Column(DateTime, nullable=True)
 
     user = relationship("User", foreign_keys=[user_email])
 
@@ -398,6 +408,48 @@ class ResumeEducation(Base):
     sort_order   = Column(Integer, default=0)
 
     resume = relationship("Resume", back_populates="educations")
+
+
+class ScoringConfig(Base):
+    """Per-user scoring mode, threshold, and per-platform daily limits."""
+    __tablename__ = "scoring_config"
+
+    user_email           = Column(String, ForeignKey("users.email", ondelete="CASCADE"), primary_key=True)
+    mode                 = Column(String, default="balanced")   # aggressive|balanced|high_quality
+    threshold_override   = Column(Integer, nullable=True)       # manual override (bypasses mode)
+    adaptive_enabled     = Column(Boolean, default=True)
+    threshold_adjustment = Column(Integer, default=0)           # computed by adaptive engine
+    # Per-platform daily limits (NULL → use DEFAULT_PLATFORM_LIMITS)
+    linkedin_daily       = Column(Integer, default=20)
+    indeed_daily         = Column(Integer, default=40)
+    glassdoor_daily      = Column(Integer, default=30)
+    monster_daily        = Column(Integer, default=25)
+    google_jobs_daily    = Column(Integer, default=15)
+    naukri_daily         = Column(Integer, default=50)
+    bayt_daily           = Column(Integer, default=20)
+    timesjobs_daily      = Column(Integer, default=30)
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_email])
+
+
+class JobScore(Base):
+    """
+    Cache table — stores ScoreResult for (user_email, job_url) pairs.
+    Avoids re-scoring the same job across sessions.
+    TTL is enforced by the scorer (24h).
+    """
+    __tablename__ = "job_scores"
+
+    id          = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    cache_key   = Column(String, unique=True, nullable=False, index=True)  # sha256(user+url)[:32]
+    user_email  = Column(String, ForeignKey("users.email", ondelete="CASCADE"), nullable=False, index=True)
+    job_url     = Column(String, nullable=True)
+    total_score = Column(Integer, nullable=False)
+    result_json = Column(Text, nullable=False)    # full ScoreResult JSON
+    scored_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", foreign_keys=[user_email])
 
 
 def init_db():

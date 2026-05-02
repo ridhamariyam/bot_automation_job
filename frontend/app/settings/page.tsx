@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "../lib/useAuth";
 import { PlatformCard, type PlatformStatus } from "../components/PlatformCard";
 
 const API = process.env.NEXT_PUBLIC_API_URL as string;
 
 type Section = "profile" | "platforms" | "screening" | "cv";
-type CredStatus = "idle" | "ok" | "fail";
-type CredState  = { email: string; verifyStatus: CredStatus };
+type CredStatus = "idle" | "ok" | "expired";
+type CredState  = { email: string; verifyStatus: CredStatus; connectedAt?: string };
 
 const PLATFORMS = [
   {
@@ -70,14 +71,16 @@ const TABS: { id: Section; label: string }[] = [
 
 export default function SettingsPage() {
   useAuth();
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get("tab");
 
   const [userEmail, setUserEmail] = useState("");
-  const [userName, setUserName]   = useState("");
   const [token, setToken]         = useState("");
   const [active, setActive]       = useState<Section>("profile");
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [error, setError]         = useState("");
+  const [successToast, setSuccessToast] = useState("");
 
   // Profile
   const [name, setName]                       = useState("");
@@ -101,12 +104,23 @@ export default function SettingsPage() {
   const [verifyPending, setVerifyPending] = useState<Record<string, { email: string; password: string }>>({});
 
   useEffect(() => {
+    if (requestedTab === "profile" || requestedTab === "platforms" || requestedTab === "screening" || requestedTab === "cv") {
+      setActive(requestedTab);
+    }
+  }, [requestedTab]);
+
+  useEffect(() => {
+    if (!successToast) return;
+    const timer = window.setTimeout(() => setSuccessToast(""), 3500);
+    return () => window.clearTimeout(timer);
+  }, [successToast]);
+
+  useEffect(() => {
     const stored = localStorage.getItem("jobrocket_user");
     const tok    = localStorage.getItem("token") ?? "";
     if (!stored) return;
     const u = JSON.parse(stored);
     setUserEmail(u.email);
-    setUserName(u.name ?? "");
     setToken(tok);
     setName(u.name ?? "");
 
@@ -127,9 +141,16 @@ export default function SettingsPage() {
 
         const init: Record<string, CredState> = {};
         for (const plat of PLATFORMS) {
+          const sessionStatus = p[`${plat.id}_session_status`] ?? "missing";
           init[plat.id] = {
             email:        p[`${plat.id}_email`]    ?? "",
-            verifyStatus: p[`${plat.id}_verified`] ? "ok" : "idle",
+            verifyStatus:
+              p[`${plat.id}_verified`]
+                ? "ok"
+                : sessionStatus === "expired"
+                ? "expired"
+                : "idle",
+            connectedAt: p[`${plat.id}_session_updated_at`] ?? undefined,
           };
         }
         setCreds(init);
@@ -159,7 +180,7 @@ export default function SettingsPage() {
     const verifyRes = await fetch(`${API}/api/bot/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ platform, email, password }),
+      body: JSON.stringify({ platform, email, password, user_email: userEmail }),
     });
 
     const vd = await verifyRes.json().catch(() => ({}));
@@ -172,8 +193,17 @@ export default function SettingsPage() {
 
     // HTTP 200: check the "ok" field in the response body
     if (vd.ok) {
-      setCreds(prev => ({ ...prev, [platform]: { email, verifyStatus: "ok" } }));
+      setCreds(prev => ({
+        ...prev,
+        [platform]: {
+          email,
+          verifyStatus: "ok",
+          connectedAt: prev[platform]?.connectedAt,
+        },
+      }));
       setVerifyPending(prev => { const copy = { ...prev }; delete copy[platform]; return copy; });
+      setSuccessToast(`${platformLabel(platform)} ready to use ✅`);
+      setError("");
     } else {
       const msg: string = vd.message ?? "";
       // Detect manual verification needed scenarios
@@ -197,6 +227,97 @@ export default function SettingsPage() {
         throw new Error(msg || "Verification failed — check your credentials");
       }
     }
+  }
+
+  async function handleBrowserConnectStart(platform: string) {
+    const res = await fetch(`${API}/api/bot/session/${platform}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ user_email: userEmail }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message = data.detail ?? data.error ?? "Could not open browser session";
+      if (String(message).toLowerCase().includes("session already in progress")) {
+        throw new Error("Connection already in progress...");
+      }
+      throw new Error(message);
+    }
+    return data.session_id as string;
+  }
+
+  async function handleBrowserConnectComplete(platform: string, sessionId: string) {
+    const statusDeadline = Date.now() + 60000;
+    let ready = false;
+    let lastMessage = "Not logged in yet";
+
+    while (Date.now() < statusDeadline) {
+      const statusRes = await fetch(`${API}/api/bot/session/${platform}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      const statusData = await statusRes.json().catch(() => ({}));
+      if (!statusRes.ok) {
+        throw new Error(statusData.detail ?? statusData.error ?? "Could not check login status");
+      }
+
+      ready = Boolean(statusData.ready);
+      lastMessage = statusData.message ?? lastMessage;
+
+      if (ready) break;
+      if (
+        String(lastMessage).toLowerCase().includes("expired") ||
+        String(lastMessage).toLowerCase().includes("closed")
+      ) {
+        throw new Error(lastMessage);
+      }
+
+      await new Promise(resolve => window.setTimeout(resolve, 2000));
+    }
+
+    if (!ready) {
+      throw new Error(
+        "Still not detected.\n\nMake sure:\n• You completed login fully\n• You reached the homepage\n\nThen click Retry"
+      );
+    }
+
+    const res = await fetch(`${API}/api/bot/session/${platform}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ session_id: sessionId, user_email: userEmail }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail ?? data.error ?? "Could not save browser session");
+    }
+    if (!data.ok) {
+      throw new Error(data.message ?? lastMessage ?? "Not logged in yet");
+    }
+
+    setCreds(prev => ({
+      ...prev,
+      [platform]: {
+        email: prev[platform]?.email || "",
+        verifyStatus: "ok",
+        connectedAt: new Date().toISOString(),
+      },
+    }));
+    setVerifyPending(prev => {
+      const copy = { ...prev };
+      delete copy[platform];
+      return copy;
+    });
+    setSuccessToast(`${platformLabel(platform)} ready to use ✅`);
+    setError("");
+  }
+
+  async function handleBrowserConnectCancel(platform: string, sessionId: string) {
+    await fetch(`${API}/api/bot/session/${platform}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ session_id: sessionId }),
+    }).catch(() => {});
   }
 
   async function saveProfile() {
@@ -427,7 +548,7 @@ export default function SettingsPage() {
                 <div className="px-5 py-4">
                   <h2 className="font-semibold text-[#1C1917] text-[15px]">Connected platforms</h2>
                   <p className="text-[13px] text-[#A89F96] mt-1 leading-relaxed">
-                    The bot applies automatically on active platforms. Click Connect to activate.
+                    The bot applies automatically on platforms marked Ready to use. Browser connect is the recommended path.
                   </p>
                 </div>
               </div>
@@ -437,7 +558,14 @@ export default function SettingsPage() {
                 {PLATFORMS.filter(p => !("comingSoon" in p)).map(p => {
                   const isReady = creds[p.id]?.verifyStatus === "ok";
                   const isPending = verifyPending[p.id] !== undefined;
-                  const status: PlatformStatus = isReady ? "ready" : isPending ? "verify_pending" : "idle";
+                  const isExpired = creds[p.id]?.verifyStatus === "expired";
+                  const status: PlatformStatus = isReady
+                    ? "ready"
+                    : isPending
+                    ? "verify_pending"
+                    : isExpired
+                    ? "session_expired"
+                    : "idle";
                   return (
                     <PlatformCard
                       key={p.id}
@@ -445,11 +573,15 @@ export default function SettingsPage() {
                       name={p.name}
                       tagline={p.tagline}
                       abbr={p.abbr}
-                      brandColor={p.color}
-                      status={status}
-                      email={verifyPending[p.id]?.email || creds[p.id]?.email}
-                      onConnect={handlePlatformConnect}
-                      onRetryVerify={handlePlatformConnect}
+                    brandColor={p.color}
+                    status={status}
+                    email={verifyPending[p.id]?.email || creds[p.id]?.email}
+                    connectedAtLabel={formatConnectedAt(creds[p.id]?.connectedAt)}
+                    onConnect={handlePlatformConnect}
+                    onRetryVerify={handlePlatformConnect}
+                    onBrowserConnectStart={handleBrowserConnectStart}
+                    onBrowserConnectComplete={handleBrowserConnectComplete}
+                    onBrowserConnectCancel={handleBrowserConnectCancel}
                     />
                   );
                 })}
@@ -513,7 +645,7 @@ export default function SettingsPage() {
 
           {/* Error */}
           {error && (
-            <div className="px-4 py-3 rounded-xl bg-[#FEF5F2] border border-[#FDDDD5] text-[13px] text-[#C0392B] leading-snug">
+            <div className="whitespace-pre-wrap px-4 py-3 rounded-xl bg-[#FEF5F2] border border-[#FDDDD5] text-[13px] text-[#C0392B] leading-snug">
               {error}
             </div>
           )}
@@ -537,8 +669,46 @@ export default function SettingsPage() {
           )}
         </form>
       </div>
+
+      {successToast && (
+        <div
+          className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-2xl bg-[#1C1410] px-5 py-3 text-[13px] font-semibold text-white shadow-[0_18px_50px_rgba(0,0,0,0.22)]"
+          aria-live="polite"
+        >
+          {successToast}
+        </div>
+      )}
     </div>
   );
+}
+
+function platformLabel(platform: string) {
+  return PLATFORMS.find((item) => item.id === platform)?.name ?? platform;
+}
+
+function formatConnectedAt(timestamp?: string) {
+  if (!timestamp) return "";
+
+  const connectedAt = new Date(timestamp);
+  const diffMs = Date.now() - connectedAt.getTime();
+
+  if (Number.isNaN(connectedAt.getTime()) || diffMs < 0) {
+    return "";
+  }
+
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) return "Connected just now";
+  if (diffMinutes < 60) {
+    return `Connected ${diffMinutes} minute${diffMinutes === 1 ? "" : "s"} ago`;
+  }
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `Connected ${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `Connected ${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
 }
 
 const INPUT = [

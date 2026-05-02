@@ -20,14 +20,14 @@ def _fernet() -> Fernet:
     return Fernet(key.encode() if isinstance(key, str) else key)
 
 
-def encrypt_password(plaintext: str) -> str:
-    """Encrypt a plaintext password to a storable ciphertext string."""
+def encrypt_text(plaintext: str) -> str:
+    """Encrypt plaintext to a storable ciphertext string."""
     if not plaintext:
         return ""
     return _fernet().encrypt(plaintext.encode()).decode()
 
 
-def decrypt_password(ciphertext: str) -> str:
+def decrypt_text(ciphertext: str) -> str:
     """Decrypt a stored ciphertext back to plaintext."""
     if not ciphertext:
         return ""
@@ -36,6 +36,16 @@ def decrypt_password(ciphertext: str) -> str:
     except (InvalidToken, Exception):
         # Ciphertext corrupt or wrong key — return empty so caller fails safely
         return ""
+
+
+def encrypt_password(plaintext: str) -> str:
+    """Encrypt a plaintext password to a storable ciphertext string."""
+    return encrypt_text(plaintext)
+
+
+def decrypt_password(ciphertext: str) -> str:
+    """Decrypt a stored ciphertext back to plaintext."""
+    return decrypt_text(ciphertext)
 
 
 def is_encrypted(value: str) -> bool:

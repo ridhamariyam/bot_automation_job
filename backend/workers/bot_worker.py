@@ -58,6 +58,8 @@ async def run_bot_task(
             ))
             db.commit()
 
+    from bot.browser.session_manager import get_storage_state
+
     # Load user & credentials
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == user_email).first()
@@ -77,14 +79,16 @@ async def run_bot_task(
             plat_email = cred.email
             plat_pass  = decrypt_password(cred.encrypted_password)
 
-        if not plat_email or not plat_pass:
-            _log(f"No credentials for {platform} — task skipped.", "warn")
-            return {"error": "No credentials"}
+        storage_state = get_storage_state(user_email, platform)
+        has_credentials = bool(plat_email and plat_pass)
+        if not has_credentials and not storage_state:
+            _log(f"No credentials or browser session for {platform} — task skipped.", "warn")
+            return {"error": "No credentials or session"}
 
         config = {
             "platform":         platform,
-            "email":            plat_email,
-            "password":         plat_pass,
+            "email":            plat_email or user_email,
+            "password":         plat_pass or "",
             "user_email":       user_email,
             "target_titles":    [t.strip() for t in (user.target_titles or "").split(",") if t.strip()],
             "target_locations": [
@@ -111,7 +115,7 @@ async def run_bot_task(
 
     # Run automation inside a pooled browser context
     results = []
-    async with pool.acquire() as ctx_browser:
+    async with pool.acquire(storage_state=storage_state) as ctx_browser:
         from bot.platforms.base import PlatformConfig
         adapter_config = PlatformConfig(
             platform_id       = platform,
@@ -124,6 +128,7 @@ async def run_bot_task(
             phone             = config["phone"] or None,
             skills            = config["skills"] or None,
         )
+        setattr(adapter_config, "_user_email", user_email)
         adapter  = adapter_class(adapter_config, ctx_browser)
         results  = await adapter.run()
 

@@ -21,6 +21,10 @@ _ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_ROOT / "backend"))
 sys.path.insert(0, str(_ROOT))
 
+from database import SessionLocal, PlatformCredential, User
+from services.crypto import decrypt_password
+from bot.browser.session_manager import get_storage_state
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -36,15 +40,49 @@ PLATFORM_MAP = {
 
 
 async def fetch_profile(user_email: str, token: str) -> dict:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
-            f"{BASE_URL}/api/profile/{user_email}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            raise RuntimeError(f"Profile fetch failed: {r.text}")
-        return r.json()
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == user_email).first()
+        if not user:
+            raise RuntimeError(f"User not found: {user_email}")
+
+        creds = {
+            cred.platform: cred
+            for cred in db.query(PlatformCredential).filter_by(user_email=user_email).all()
+        }
+
+        profile = {
+            "email": user.email,
+            "name": user.name or "",
+            "phone": user.phone or "",
+            "cv_path": user.cv_path or "",
+            "skills": [s.strip() for s in (user.skills or "").split(",") if s.strip()],
+            "target_titles": [t.strip() for t in (user.target_titles or "").split(",") if t.strip()],
+            "target_locations": [
+                l.strip()
+                for l in (user.target_locations or "").replace("\r", "").split("\n")
+                if l.strip()
+            ],
+        }
+
+        for platform in PLATFORM_MAP:
+            cred = creds.get(platform)
+            if cred:
+                plat_email = cred.email
+                plat_pass = decrypt_password(cred.encrypted_password)
+                verified = bool(cred.verified)
+            else:
+                plat_email = getattr(user, f"{platform}_email", "") or ""
+                plat_pass = getattr(user, f"{platform}_password", "") or ""
+                verified = bool(getattr(user, f"{platform}_verified", 0))
+
+            if getattr(user, f"{platform}_session_json", None):
+                verified = True
+
+            profile[f"{platform}_email"] = plat_email
+            profile[f"{platform}_password"] = plat_pass
+            profile[f"{platform}_verified"] = verified
+
+        return profile
 
 
 async def post_log(user_email: str, message: str, level: str = "info"):
@@ -107,17 +145,27 @@ async def main(user_email: str, token: str, max_jobs_each: int = 50):
     logger.info("Locations: %s", locations)
 
     # Determine which platforms to run (based on verified credentials)
-    platforms_to_run: list[tuple[str, str, str]] = []
+    platforms_to_run: list[tuple[str, str, str, dict | None]] = []
     for platform, dotted_class in PLATFORM_MAP.items():
-        plat_email = data.get(f"{platform}_email", "")
-        plat_pass  = data.get(f"{platform}_password", "")
-        if plat_email and plat_pass:
-            platforms_to_run.append((platform, plat_email, plat_pass))
+        del dotted_class
+        saved_email = data.get(f"{platform}_email", "")
+        saved_pass  = data.get(f"{platform}_password", "")
+        verified    = bool(data.get(f"{platform}_verified"))
+        storage_state = get_storage_state(user_email, platform)
+        has_credentials = bool(saved_email and saved_pass)
+
+        if verified and (has_credentials or storage_state):
+            platforms_to_run.append((
+                platform,
+                saved_email or user_email,
+                saved_pass or "",
+                storage_state,
+            ))
 
     if not platforms_to_run:
         await post_log(
             user_email,
-            "No platform credentials found. Set up at least one platform in Settings.",
+            "No ready platform connection found. Set up LinkedIn or Indeed in Settings.",
             "error",
         )
         return
@@ -136,7 +184,7 @@ async def main(user_email: str, token: str, max_jobs_each: int = 50):
     await pool.start()
 
     try:
-        for platform, plat_email, plat_pass in platforms_to_run:
+        for platform, plat_email, plat_pass, storage_state in platforms_to_run:
             AdapterClass = _import_adapter(PLATFORM_MAP[platform])
             config       = PlatformConfig(
                 platform_id      = platform,
@@ -153,10 +201,11 @@ async def main(user_email: str, token: str, max_jobs_each: int = 50):
                     else data.get("skills") or ""
                 ),
             )
+            setattr(config, "_user_email", user_email)
 
             await post_log(user_email, f"Starting {platform}...", "info")
 
-            async with pool.acquire() as ctx:
+            async with pool.acquire(storage_state=storage_state) as ctx:
                 adapter = AdapterClass(config, ctx)
 
                 # Inject logging function

@@ -8,19 +8,27 @@ v2 changes:
 - Credentials read from PlatformCredential (encrypted) or legacy flat columns
 """
 import asyncio
+import logging
 import os
 import re
 import signal
-from datetime import datetime, date
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, date, timedelta
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
+from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 from pydantic import BaseModel
 from sqlalchemy import func
 
 from database import SessionLocal, User, BotLog, JobApplication, PlatformCredential, PLAN_FEATURES
+from services.crypto import encrypt_password
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ── In-process subprocess tracking (dev / fallback only) ──────────────────────
 _running:    dict[str, asyncio.subprocess.Process] = {}
@@ -40,6 +48,43 @@ CHROMIUM_ARGS = [
     "--disable-gpu", "--disable-blink-features=AutomationControlled",
     "--disable-features=IsolateOrigins,site-per-process",
 ]
+CAPTURE_VIEWPORT = {"width": 1280, "height": 800}
+CAPTURE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
+CAPTURE_LOCALE = "en-US"
+CAPTURE_TIMEZONE = "America/New_York"
+CAPTURE_SLOW_MO_MS = 75
+
+LOGIN_URLS = {
+    "linkedin": "https://www.linkedin.com/login",
+    "indeed": "https://secure.indeed.com/account/login",
+}
+LOGIN_SESSION_TTL = timedelta(minutes=10)
+
+
+@dataclass
+class BrowserLoginSession:
+    session_id: str
+    user_email: str
+    platform: str
+    playwright: Playwright
+    browser: Browser
+    context: BrowserContext
+    page: Page
+    created_at: datetime
+    expires_at: datetime
+    timeout_task: Optional[asyncio.Task] = None
+
+
+_browser_sessions: dict[str, BrowserLoginSession] = {}
+_browser_sessions_lock = asyncio.Lock()
+
+
+class BrowserSessionInProgressError(Exception):
+    pass
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
@@ -52,6 +97,20 @@ class VerifyIn(BaseModel):
     platform: str
     email:    str
     password: str
+    user_email: Optional[str] = None
+
+class BrowserSessionStartIn(BaseModel):
+    user_email: str
+
+class BrowserSessionStatusIn(BaseModel):
+    session_id: str
+
+class BrowserSessionCompleteIn(BaseModel):
+    session_id: str
+    user_email: str
+
+class BrowserSessionCancelIn(BaseModel):
+    session_id: str
 
 class LogIn(BaseModel):
     user_email: str
@@ -60,6 +119,247 @@ class LogIn(BaseModel):
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+def _normalize_session_platform(platform: str) -> str:
+    platform = platform.lower().strip()
+    if platform not in LOGIN_URLS:
+        raise HTTPException(400, f"Unsupported browser session platform: {platform}")
+    return platform
+
+
+async def _close_browser_session(session: BrowserLoginSession) -> None:
+    current_task = asyncio.current_task()
+    if session.timeout_task and session.timeout_task is not current_task:
+        session.timeout_task.cancel()
+
+    try:
+        if not session.page.is_closed():
+            await session.page.close()
+    except Exception:
+        pass
+    try:
+        await session.context.close()
+    except Exception:
+        pass
+    try:
+        await session.browser.close()
+    except Exception:
+        pass
+    try:
+        await session.playwright.stop()
+    except Exception:
+        pass
+
+
+async def _expire_browser_session(session_id: str) -> None:
+    session = await _get_browser_session(session_id)
+    if not session:
+        return
+
+    delay = max(0.0, (session.expires_at - datetime.utcnow()).total_seconds())
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+
+    expired = await _pop_browser_session(session_id)
+    if expired:
+        await _close_browser_session(expired)
+
+
+async def _cleanup_expired_browser_sessions() -> None:
+    now = datetime.utcnow()
+    expired: list[BrowserLoginSession] = []
+
+    async with _browser_sessions_lock:
+        for session_id, session in list(_browser_sessions.items()):
+            if session.expires_at <= now:
+                expired.append(_browser_sessions.pop(session_id))
+
+    for session in expired:
+        await _close_browser_session(session)
+
+
+async def _pop_browser_session(session_id: str) -> Optional[BrowserLoginSession]:
+    async with _browser_sessions_lock:
+        return _browser_sessions.pop(session_id, None)
+
+
+async def _get_browser_session(session_id: str) -> Optional[BrowserLoginSession]:
+    async with _browser_sessions_lock:
+        return _browser_sessions.get(session_id)
+
+
+async def _has_active_browser_session(user_email: str, platform: str) -> bool:
+    async with _browser_sessions_lock:
+        for session in _browser_sessions.values():
+            if session.user_email == user_email and session.platform == platform:
+                return True
+    return False
+
+
+async def _new_capture_context(browser: Browser, storage_state: Optional[dict] = None) -> BrowserContext:
+    return await browser.new_context(
+        viewport=CAPTURE_VIEWPORT,
+        user_agent=CAPTURE_USER_AGENT,
+        locale=CAPTURE_LOCALE,
+        timezone_id=CAPTURE_TIMEZONE,
+        storage_state=storage_state,
+    )
+
+
+def _session_current_page(session: BrowserLoginSession) -> Optional[Page]:
+    open_pages = [page for page in session.context.pages if not page.is_closed()]
+    if open_pages:
+        session.page = open_pages[-1]
+        return session.page
+    if session.page and not session.page.is_closed():
+        return session.page
+    return None
+
+
+async def _browser_session_ready(session: BrowserLoginSession) -> tuple[bool, str]:
+    from bot.browser.session_manager import is_authenticated_page
+
+    page = _session_current_page(session)
+    if not page:
+        return False, "Browser window was closed. Start again."
+
+    try:
+        if await is_authenticated_page(page, session.platform):
+            return True, "Login detected"
+    except Exception as exc:
+        logger.warning("Status check failed for %s [%s]: %s", session.platform, session.session_id, exc)
+        return False, "Checking login failed"
+
+    return False, "Not logged in yet"
+
+
+async def _validate_captured_session(session: BrowserLoginSession, storage_state: dict) -> bool:
+    from bot.browser.session_manager import validate_authenticated_session
+
+    validate_ctx = await _new_capture_context(session.browser, storage_state=storage_state)
+    try:
+        return await validate_authenticated_session(validate_ctx, session.platform)
+    finally:
+        try:
+            await validate_ctx.close()
+        except Exception:
+            pass
+
+
+async def _validate_saved_platform_session(user_email: str, platform: str) -> Optional[bool]:
+    from bot.browser.session_manager import (
+        get_storage_state,
+        invalidate_session,
+        validate_authenticated_session,
+    )
+
+    storage_state = get_storage_state(user_email, platform)
+    if not storage_state:
+        return True
+
+    playwright: Optional[Playwright] = None
+    browser: Optional[Browser] = None
+    context: Optional[BrowserContext] = None
+
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True, args=CHROMIUM_ARGS)
+        context = await _new_capture_context(browser, storage_state=storage_state)
+        is_valid = await validate_authenticated_session(context, platform)
+        if not is_valid:
+            invalidate_session(user_email, platform)
+        return is_valid
+    except Exception as exc:
+        logger.warning("Saved session preflight failed for %s/%s: %s", user_email, platform, exc)
+        return None
+    finally:
+        if context:
+            try:
+                await context.close()
+            except Exception:
+                pass
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if playwright:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+
+
+async def _launch_browser_login_session(platform: str, user_email: str) -> BrowserLoginSession:
+    await _cleanup_expired_browser_sessions()
+    playwright: Optional[Playwright] = None
+    browser: Optional[Browser] = None
+    context: Optional[BrowserContext] = None
+    page: Optional[Page] = None
+
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(
+            headless=False,
+            slow_mo=CAPTURE_SLOW_MO_MS,
+            args=CHROMIUM_ARGS,
+        )
+        context = await _new_capture_context(browser)
+        page = await context.new_page()
+        await page.goto(LOGIN_URLS[platform], wait_until="domcontentloaded", timeout=30000)
+
+        session = BrowserLoginSession(
+            session_id=str(uuid.uuid4()),
+            user_email=user_email,
+            platform=platform,
+            playwright=playwright,
+            browser=browser,
+            context=context,
+            page=page,
+            created_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + LOGIN_SESSION_TTL,
+        )
+
+        async with _browser_sessions_lock:
+            for active in _browser_sessions.values():
+                if active.user_email == user_email and active.platform == platform:
+                    raise BrowserSessionInProgressError("Session already in progress")
+            _browser_sessions[session.session_id] = session
+            session.timeout_task = asyncio.create_task(_expire_browser_session(session.session_id))
+
+        logger.info(
+            "Browser connect session started for %s/%s [%s]. User must log in manually and click Continue.",
+            user_email,
+            platform,
+            session.session_id,
+        )
+        return session
+    except Exception:
+        if page:
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
+        if context:
+            try:
+                await context.close()
+            except Exception:
+                pass
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if playwright:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+        raise
+
+
 def _get_verified_platforms(user: User, db) -> list[str]:
     """Return list of platforms with verified credentials."""
     plan_platforms = PLAN_FEATURES["premium"]["platforms"]  # all users have full access
@@ -70,13 +370,15 @@ def _get_verified_platforms(user: User, db) -> list[str]:
     cred_map = {c.platform: c for c in creds}
 
     for platform in plan_platforms:
+        if getattr(user, f"{platform}_session_json", None):
+            verified.append(platform)
+            continue
         cred = cred_map.get(platform)
         if cred and cred.verified:
             verified.append(platform)
             continue
         # Fallback: legacy flat columns
-        if (getattr(user, f"{platform}_email", None)
-                and getattr(user, f"{platform}_verified", 0)):
+        if getattr(user, f"{platform}_verified", 0):
             verified.append(platform)
 
     return verified
@@ -105,6 +407,8 @@ async def start_bot(body: StartIn):
     if body.max_jobs is not None and body.max_jobs > 500:
         raise HTTPException(400, "max_jobs cannot exceed 500 per run")
 
+    session_platforms: list[str] = []
+
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == body.email).first()
         if not user:
@@ -114,7 +418,7 @@ async def start_bot(body: StartIn):
         if not verified_platforms:
             raise HTTPException(
                 400,
-                "No verified platform credentials. Go to Settings → Platforms and verify at least one.",
+                "No ready platform connection. Go to Settings → Platforms and connect at least one platform.",
             )
 
         today_count, max_daily, remaining = _check_daily_limit(
@@ -127,7 +431,30 @@ async def start_bot(body: StartIn):
             )
 
         effective_max = min(body.max_jobs or 50, remaining)
+        session_platforms = [
+            platform
+            for platform in verified_platforms
+            if getattr(user, f"{platform}_session_json", None)
+        ]
 
+    for platform in session_platforms:
+        is_valid = await _validate_saved_platform_session(body.email, platform)
+        if is_valid is None:
+            raise HTTPException(
+                503,
+                f"Could not validate your {platform} session right now. Please try again.",
+            )
+        if not is_valid:
+            with SessionLocal() as db:
+                db.add(BotLog(
+                    user_email=body.email,
+                    message=f"{platform.title()} session expired before bot start",
+                    level="warn",
+                ))
+                db.commit()
+            raise HTTPException(409, f"SESSION_EXPIRED:{platform}")
+
+    with SessionLocal() as db:
         db.add(BotLog(
             user_email=body.email,
             message=f"Bot starting on {', '.join(verified_platforms)}. Max jobs: {effective_max} ({today_count}/{max_daily} used today)",
@@ -266,6 +593,96 @@ async def bot_status(email: str):
     return {"running": False, "mode": REDIS_URL and "worker" or "subprocess"}
 
 
+# ── Browser session connect flow ───────────────────────────────────────────────
+@router.post("/session/{platform}/start")
+async def start_browser_session(platform: str, body: BrowserSessionStartIn):
+    platform = _normalize_session_platform(platform)
+    await _cleanup_expired_browser_sessions()
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == body.user_email).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+    if await _has_active_browser_session(body.user_email, platform):
+        return JSONResponse(status_code=409, content={"error": "Session already in progress"})
+
+    try:
+        session = await _launch_browser_login_session(platform, body.user_email)
+    except BrowserSessionInProgressError:
+        return JSONResponse(status_code=409, content={"error": "Session already in progress"})
+    return {"session_id": session.session_id, "status": "waiting_for_login"}
+
+
+@router.post("/session/{platform}/status")
+async def browser_session_status(platform: str, body: BrowserSessionStatusIn):
+    platform = _normalize_session_platform(platform)
+    await _cleanup_expired_browser_sessions()
+
+    session = await _get_browser_session(body.session_id)
+    if not session or session.platform != platform:
+        return {"ready": False, "message": "Session expired"}
+
+    ready, message = await _browser_session_ready(session)
+    return {"ready": ready, "message": message}
+
+
+@router.post("/session/{platform}/complete")
+async def complete_browser_session(platform: str, body: BrowserSessionCompleteIn):
+    platform = _normalize_session_platform(platform)
+    await _cleanup_expired_browser_sessions()
+
+    session = await _get_browser_session(body.session_id)
+    if not session or session.platform != platform or session.user_email != body.user_email:
+        raise HTTPException(404, "Session not found or expired")
+
+    ready, message = await _browser_session_ready(session)
+    if not ready:
+        return {"ok": False, "message": message}
+
+    try:
+        storage_state = await session.context.storage_state()
+        is_valid = await _validate_captured_session(session, storage_state)
+        if not is_valid:
+            return {
+                "ok": False,
+                "message": "Session validation failed. Please wait until your homepage loads, then retry.",
+            }
+
+        from bot.browser.session_manager import persist_storage_state
+
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.email == body.user_email).first()
+            if not user:
+                raise HTTPException(404, "User not found")
+
+        if not persist_storage_state(body.user_email, platform, storage_state):
+            raise HTTPException(500, f"Could not save {platform} session")
+    except Exception:
+        popped = await _pop_browser_session(body.session_id)
+        if popped:
+            await _close_browser_session(popped)
+        raise
+
+    popped = await _pop_browser_session(body.session_id)
+    if popped:
+        await _close_browser_session(popped)
+
+    return {"ok": True, "message": f"{platform.title()} session saved"}
+
+
+@router.post("/session/{platform}/cancel")
+async def cancel_browser_session(platform: str, body: BrowserSessionCancelIn):
+    platform = _normalize_session_platform(platform)
+    session = await _get_browser_session(body.session_id)
+    if session and session.platform == platform:
+        session = await _pop_browser_session(body.session_id)
+    else:
+        session = None
+    if session:
+        await _close_browser_session(session)
+    return {"ok": True, "message": "Session cancelled"}
+
+
 # ── Verify credentials ─────────────────────────────────────────────────────────
 @router.post("/verify")
 async def verify_platform(body: VerifyIn):
@@ -281,6 +698,8 @@ async def verify_platform(body: VerifyIn):
     platform = body.platform.lower()
     if platform not in ("linkedin", "indeed", "glassdoor"):
         raise HTTPException(400, f"Unsupported platform for verification: {platform}")
+
+    target_user_email = (body.user_email or "").strip() or body.email
 
     async def _check() -> tuple[bool, str]:
         from bot.browser.stealth_browser import StealthBrowser
@@ -359,21 +778,29 @@ async def verify_platform(body: VerifyIn):
         with SessionLocal() as db:
             # Update PlatformCredential if it exists
             cred = db.query(PlatformCredential).filter_by(
-                user_email=body.email, platform=platform
+                user_email=target_user_email, platform=platform
             ).first()
+            if not cred:
+                cred = db.query(PlatformCredential).filter_by(
+                    platform=platform, email=body.email
+                ).first()
             if not cred:
                 # Create credential record from the verify call
                 cred = PlatformCredential(
-                    user_email         = body.email,
+                    user_email         = target_user_email,
                     platform           = platform,
                     email              = body.email,
-                    encrypted_password = "",  # not provided here
+                    encrypted_password = encrypt_password(body.password),
                 )
                 db.add(cred)
+            else:
+                cred.email = body.email
+                if body.password:
+                    cred.encrypted_password = encrypt_password(body.password)
             cred.verified = True
 
             # Also update legacy flat column
-            user = db.query(User).filter(User.email == body.email).first()
+            user = db.query(User).filter(User.email == target_user_email).first()
             if user and hasattr(user, f"{platform}_verified"):
                 setattr(user, f"{platform}_verified", 1)
 
@@ -397,8 +824,14 @@ def get_platforms(email: str):
         platforms_out = []
         for p in plan_platforms:
             cred = creds.get(p)
-            if cred:
+            session_ready = bool(getattr(user, f"{p}_session_json", None))
+            session_updated_at = getattr(user, f"{p}_session_updated_at", None)
+            if session_ready:
+                status = "verified"
+            elif cred:
                 status = "verified" if cred.verified else "configured"
+            elif session_updated_at:
+                status = "expired"
             elif getattr(user, f"{p}_email", None):
                 status = "verified" if getattr(user, f"{p}_verified", 0) else "configured"
             else:

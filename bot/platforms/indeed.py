@@ -20,17 +20,25 @@ class IndeedAdapter(AbstractPlatform):
     SEARCH_URL = "https://www.indeed.com/jobs"
 
     async def login(self) -> bool:
-        from bot.browser.session_manager import load_session, save_session, invalidate_session
+        from bot.browser.session_manager import (
+            invalidate_session,
+            load_session,
+            save_session,
+            validate_authenticated_session,
+        )
 
         page = await self.ctx.new_page()
         try:
-            if await load_session(self.ctx, self.config.email, "indeed"):
-                await page.goto("https://www.indeed.com/myjobs",
-                                wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(2)
-                if "myjobs" in page.url or "my-jobs" in page.url:
+            if await load_session(self.ctx, self._user_email, "indeed"):
+                if await validate_authenticated_session(self.ctx, "indeed"):
+                    await self._log("Indeed session restored", "info")
                     return True
-                invalidate_session(self.config.email, "indeed")
+                invalidate_session(self._user_email, "indeed")
+                await self._log("SESSION_EXPIRED", "warn")
+
+            if not self.config.email or not self.config.password:
+                await self._log("Indeed session expired — reconnect", "error")
+                return False
 
             await page.goto(self.LOGIN_URL, wait_until="domcontentloaded", timeout=20000)
             await asyncio.sleep(random.uniform(2.0, 3.5))
@@ -63,7 +71,7 @@ class IndeedAdapter(AbstractPlatform):
                 return False
 
             if "indeed.com" in url and "auth" not in url:
-                await save_session(self.ctx, self.config.email, "indeed")
+                await save_session(self.ctx, self._user_email, "indeed")
                 return True
 
             await self._log("Indeed login failed — check credentials", "error")

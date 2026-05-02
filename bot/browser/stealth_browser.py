@@ -320,7 +320,7 @@ class StealthBrowser:
         ctx     = await self._new_context(profile)
         return _Slot(context=ctx, profile=profile)
 
-    async def _new_context(self, profile: BrowserProfile) -> BrowserContext:
+    async def _new_context(self, profile: BrowserProfile, storage_state: Optional[dict] = None) -> BrowserContext:
         ctx = await self._browser.new_context(
             user_agent          = profile.user_agent,
             viewport            = {"width": profile.viewport_w, "height": profile.viewport_h},
@@ -328,6 +328,7 @@ class StealthBrowser:
             timezone_id         = profile.timezone,
             java_script_enabled = True,
             accept_downloads    = True,
+            storage_state       = storage_state,
             # Tell sites we accept these media types
             extra_http_headers  = {
                 "Accept-Language": f"{profile.language},en;q=0.9",
@@ -346,11 +347,23 @@ class StealthBrowser:
         return ctx
 
     @asynccontextmanager
-    async def acquire(self):
+    async def acquire(self, storage_state: Optional[dict] = None):
         """
         Check out a context. If the pool is exhausted, create an overflow context.
         Recycles the slot after max_uses to prevent memory/cookie accumulation.
         """
+        if storage_state is not None:
+            profile = random_profile()
+            ctx = await self._new_context(profile, storage_state=storage_state)
+            try:
+                yield ctx
+            finally:
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
+            return
+
         slot: Optional[_Slot] = None
         overflow = False
 

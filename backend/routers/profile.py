@@ -12,8 +12,8 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from database import SessionLocal, User, PlatformCredential
-from services.crypto import encrypt_password, decrypt_password
+from database import SessionLocal, User, PlatformCredential, PlatformSession
+from services.crypto import encrypt_password
 from utils.cv_parser import parse_cv
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ PLATFORMS = [
     "linkedin", "indeed", "glassdoor", "monster",
     "naukri", "bayt", "timesjobs", "google_jobs",
 ]
+BROWSER_SESSION_PLATFORMS = {"linkedin", "indeed"}
 
 
 # ── Create / update profile ────────────────────────────────────────────────────
@@ -181,6 +182,15 @@ def update_credentials(email: str, body: CredentialsIn):
                 setattr(user, f"{platform}_password", plat_pass)
                 if email_changed:
                     setattr(user, f"{platform}_verified", 0)
+                    if platform in BROWSER_SESSION_PLATFORMS:
+                        setattr(user, f"{platform}_session_json", None)
+                        setattr(user, f"{platform}_session_updated_at", None)
+                        old_session = db.query(PlatformSession).filter_by(
+                            user_email=email, platform=platform
+                        ).first()
+                        if old_session:
+                            old_session.cookies_json = None
+                            old_session.is_valid = False
                 # else: preserve existing verified status
 
         db.commit()
@@ -196,6 +206,12 @@ def _fmt(user: User, db) -> dict:
     falls back to legacy flat columns otherwise.
     """
     def _cred(platform: str) -> dict:
+        session_ready = False
+        session_updated_at = None
+        if platform in BROWSER_SESSION_PLATFORMS:
+            session_ready = bool(getattr(user, f"{platform}_session_json", None))
+            session_updated_at = getattr(user, f"{platform}_session_updated_at", None)
+
         if db:
             cred = db.query(PlatformCredential).filter_by(
                 user_email=user.email, platform=platform
@@ -204,13 +220,27 @@ def _fmt(user: User, db) -> dict:
                 return {
                     "email":    cred.email,
                     "password": "",         # Never return plaintext to frontend
-                    "verified": cred.verified,
+                    "verified": bool(cred.verified or session_ready),
+                    "session_status": (
+                        "ready" if session_ready else
+                        "expired" if session_updated_at else
+                        "missing"
+                    ),
+                    "session_updated_at": (
+                        session_updated_at.isoformat() if session_updated_at else None
+                    ),
                 }
         # Fallback to legacy flat columns
         return {
             "email":    getattr(user, f"{platform}_email", "") or "",
             "password": "",
-            "verified": bool(getattr(user, f"{platform}_verified", 0)),
+            "verified": bool(getattr(user, f"{platform}_verified", 0) or session_ready),
+            "session_status": (
+                "ready" if session_ready else
+                "expired" if session_updated_at else
+                "missing"
+            ),
+            "session_updated_at": session_updated_at.isoformat() if session_updated_at else None,
         }
 
     result = {
@@ -240,5 +270,7 @@ def _fmt(user: User, db) -> dict:
         result[f"{platform}_email"]    = cred["email"]
         result[f"{platform}_password"] = cred["password"]
         result[f"{platform}_verified"] = cred["verified"]
+        result[f"{platform}_session_status"] = cred["session_status"]
+        result[f"{platform}_session_updated_at"] = cred["session_updated_at"]
 
     return result

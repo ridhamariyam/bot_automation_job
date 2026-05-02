@@ -2,7 +2,19 @@
 
 import { useState } from "react";
 
-export type PlatformStatus = "ready" | "idle" | "coming_soon" | "verify_pending";
+import { BrowserConnectModal } from "./BrowserConnectModal";
+
+const BROWSER_LOGIN_URLS: Record<string, string> = {
+  linkedin: "https://www.linkedin.com/login",
+  indeed: "https://secure.indeed.com/account/login",
+};
+
+export type PlatformStatus =
+  | "ready"
+  | "idle"
+  | "coming_soon"
+  | "verify_pending"
+  | "session_expired";
 
 interface Props {
   id: string;
@@ -12,8 +24,12 @@ interface Props {
   brandColor: string;
   status: PlatformStatus;
   email?: string;
-  onConnect: (id: string, email: string, password: string) => Promise<void>;
+  connectedAtLabel?: string;
+  onConnect?: (id: string, email: string, password: string) => Promise<void>;
   onRetryVerify?: (id: string, email: string, password: string) => Promise<void>;
+  onBrowserConnectStart?: (id: string) => Promise<string>;
+  onBrowserConnectComplete?: (id: string, sessionId: string) => Promise<void>;
+  onBrowserConnectCancel?: (id: string, sessionId: string) => Promise<void>;
 }
 
 function PlatformIcon({ id, abbr }: { id: string; abbr: string }) {
@@ -70,38 +86,39 @@ export function PlatformCard({
   brandColor,
   status,
   email: initialEmail,
+  connectedAtLabel,
   onConnect,
   onRetryVerify,
+  onBrowserConnectStart,
+  onBrowserConnectComplete,
+  onBrowserConnectCancel,
 }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [credEmail, setCredEmail] = useState(initialEmail || "");
   const [credPassword, setCredPassword] = useState("");
+  const [browserModalOpen, setBrowserModalOpen] = useState(false);
+  const [browserSessionId, setBrowserSessionId] = useState("");
+  const [browserLoading, setBrowserLoading] = useState(false);
+  const [browserError, setBrowserError] = useState("");
+  const [browserStatusText, setBrowserStatusText] = useState("");
+  const [browserPrimaryLabel, setBrowserPrimaryLabel] = useState("Continue");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!credEmail || !credPassword) return;
+    if (!credEmail || !credPassword || !onConnect) return;
     setLoading(true);
     setErr("");
     try {
       await onConnect(id, credEmail, credPassword);
       setShowForm(false);
-      setCredEmail("");
       setCredPassword("");
     } catch (ex: unknown) {
-      // Check if this is a "credentials saved but verify pending" error
       const msg = ex instanceof Error ? ex.message : "Connection failed";
-      if (msg.includes("Credentials saved") || msg.includes("manual verification")) {
-        setErr(msg);
-        // Don't clear the form — keep credentials for retry
-      } else {
-        setErr(msg);
-        // For other errors, clear form as it's a real issue
-        if (!msg.includes("saved")) {
-          setCredEmail("");
-          setCredPassword("");
-        }
+      setErr(msg);
+      if (!msg.includes("saved")) {
+        setCredPassword("");
       }
     } finally {
       setLoading(false);
@@ -116,11 +133,10 @@ export function PlatformCard({
     try {
       if (onRetryVerify) {
         await onRetryVerify(id, credEmail, credPassword);
-      } else {
+      } else if (onConnect) {
         await onConnect(id, credEmail, credPassword);
       }
       setShowForm(false);
-      setCredEmail("");
       setCredPassword("");
     } catch (ex: unknown) {
       setErr(ex instanceof Error ? ex.message : "Retry failed");
@@ -129,224 +145,304 @@ export function PlatformCard({
     }
   }
 
+  async function handleBrowserStart() {
+    if (!onBrowserConnectStart) return;
+    setBrowserLoading(true);
+    setBrowserError("");
+    setBrowserStatusText("");
+    setBrowserPrimaryLabel("Continue");
+    setErr("");
+    try {
+      const sessionId = await onBrowserConnectStart(id);
+      setBrowserSessionId(sessionId);
+      setBrowserModalOpen(true);
+    } catch (ex: unknown) {
+      setErr(ex instanceof Error ? ex.message : "Could not open browser");
+    } finally {
+      setBrowserLoading(false);
+    }
+  }
+
+  async function handleBrowserContinue() {
+    if (!browserSessionId || !onBrowserConnectComplete) return;
+    setBrowserLoading(true);
+    setBrowserError("");
+    setBrowserStatusText("Checking login...");
+    setBrowserPrimaryLabel("Continue");
+    try {
+      await onBrowserConnectComplete(id, browserSessionId);
+      setBrowserPrimaryLabel("Ready to use ✅");
+      setBrowserStatusText("Ready to use ✅");
+      setBrowserLoading(false);
+      await new Promise(resolve => window.setTimeout(resolve, 1200));
+      setBrowserModalOpen(false);
+      setBrowserSessionId("");
+      setCredPassword("");
+      setShowForm(false);
+      setBrowserStatusText("");
+      setBrowserPrimaryLabel("Continue");
+    } catch (ex: unknown) {
+      const message = ex instanceof Error ? ex.message : "Could not save session";
+      setBrowserError(message);
+      setBrowserStatusText("");
+      setBrowserPrimaryLabel(
+        message.toLowerCase().includes("still not detected") ||
+          message.toLowerCase().includes("not logged in yet")
+          ? "Retry"
+          : "Continue"
+      );
+      setBrowserLoading(false);
+    }
+  }
+
+  async function handleBrowserCancel() {
+    const sessionId = browserSessionId;
+    setBrowserModalOpen(false);
+    setBrowserSessionId("");
+    setBrowserError("");
+    setBrowserStatusText("");
+    setBrowserPrimaryLabel("Continue");
+    if (sessionId && onBrowserConnectCancel) {
+      try {
+        await onBrowserConnectCancel(id, sessionId);
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+  }
+
   const isReady = status === "ready";
   const isPending = status === "verify_pending";
+  const isExpired = status === "session_expired";
+  const canConnect = status === "idle" || status === "session_expired";
 
   return (
-    <div
-      className={[
-        "group relative rounded-2xl px-5 py-4",
-        "transition-all duration-200",
-        isReady
-          ? "bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-1 ring-emerald-100"
-          : isPending
-          ? "bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-1 ring-blue-100"
-          : status === "coming_soon"
-          ? "bg-[#F8F5F0] shadow-[0_1px_4px_rgba(0,0,0,0.05)]"
-          : "bg-white shadow-[0_2px_8px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.04)]",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      {/* Top row: icon + name + action */}
-      <div className="flex items-center gap-3 sm:gap-4">
-        {/* Brand logo */}
-        <div
-          className={[
-            "w-[40px] h-[40px] sm:w-[46px] sm:h-[46px] rounded-[11px] sm:rounded-[13px] flex items-center justify-center shrink-0",
-            "shadow-[0_2px_8px_rgba(0,0,0,0.15)]",
-            status === "coming_soon" ? "opacity-40 grayscale" : "",
-          ].join(" ")}
-          style={{ backgroundColor: brandColor }}
-        >
-          <PlatformIcon id={id} abbr={abbr} />
-        </div>
-
-        {/* Info */}
-        <div className="flex-1 min-w-0">
-          <p
+    <>
+      <div
+        className={[
+          "group relative rounded-2xl px-5 py-4",
+          "transition-all duration-200",
+          isReady
+            ? "bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-1 ring-emerald-100"
+            : isPending
+            ? "bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-1 ring-blue-100"
+            : isExpired
+            ? "bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-1 ring-amber-100"
+            : status === "coming_soon"
+            ? "bg-[#F8F5F0] shadow-[0_1px_4px_rgba(0,0,0,0.05)]"
+            : "bg-white shadow-[0_2px_8px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.04)]",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <div className="flex items-center gap-3 sm:gap-4">
+          <div
             className={[
-              "text-[13px] sm:text-[14px] font-semibold tracking-tight leading-snug",
-              status === "coming_soon" ? "text-[#A89F97]" : "text-[#1A1714]",
+              "w-[40px] h-[40px] sm:w-[46px] sm:h-[46px] rounded-[11px] sm:rounded-[13px] flex items-center justify-center shrink-0",
+              "shadow-[0_2px_8px_rgba(0,0,0,0.15)]",
+              status === "coming_soon" ? "opacity-40 grayscale" : "",
             ].join(" ")}
+            style={{ backgroundColor: brandColor }}
           >
-            {name}
-          </p>
-          <p className="text-[11px] sm:text-[12px] text-[#A89F97] mt-0.5 truncate leading-relaxed">
-            {tagline}
-          </p>
+            <PlatformIcon id={id} abbr={abbr} />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <p
+              className={[
+                "text-[13px] sm:text-[14px] font-semibold tracking-tight leading-snug",
+                status === "coming_soon" ? "text-[#A89F97]" : "text-[#1A1714]",
+              ].join(" ")}
+            >
+              {name}
+            </p>
+            <p className="text-[11px] sm:text-[12px] text-[#A89F97] mt-0.5 truncate leading-relaxed">
+              {tagline}
+            </p>
+            {connectedAtLabel && (
+              <p
+                className={[
+                  "mt-1 text-[11px] leading-relaxed",
+                  isExpired
+                    ? "text-amber-700"
+                    : isReady
+                    ? "text-emerald-700"
+                    : "text-[#A89F97]",
+                ].join(" ")}
+              >
+                {connectedAtLabel}
+              </p>
+            )}
+          </div>
+
+          <div className="shrink-0">
+            {status === "coming_soon" && (
+              <span className="text-[9px] sm:text-[10px] font-semibold text-[#C0B8AF] bg-[#EDE8E0] px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full tracking-widest uppercase">
+                Soon
+              </span>
+            )}
+
+            {isReady && (
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
+                <span className="text-[12px] sm:text-[13px] font-semibold text-emerald-700">
+                  Ready to use
+                </span>
+              </div>
+            )}
+
+            {isPending && (
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_6px_rgba(59,130,246,0.5)]" />
+                <span className="text-[12px] sm:text-[13px] font-semibold text-blue-700">Verify</span>
+              </div>
+            )}
+
+            {isExpired && (
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <span className="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]" />
+                <span className="text-[12px] sm:text-[13px] font-semibold text-amber-700">Reconnect</span>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Status / CTA */}
-        <div className="shrink-0">
-          {status === "coming_soon" && (
-            <span className="text-[9px] sm:text-[10px] font-semibold text-[#C0B8AF] bg-[#EDE8E0] px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full tracking-widest uppercase">
-              Soon
-            </span>
-          )}
-
-          {isReady && (
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
-              <span className="text-[12px] sm:text-[13px] font-semibold text-emerald-700">Ready</span>
+        {isPending && !showForm && (
+          <div className="mt-4 pt-3 border-t border-blue-100">
+            <div className="bg-blue-50 rounded-lg px-3 py-2.5 text-[12px] leading-relaxed">
+              <p className="font-semibold text-blue-800 mb-1">Manual verification needed</p>
+              <p className="text-blue-700 text-[11px] mb-3 leading-relaxed">
+                Your credentials are saved. Log in once on {name} in your browser, then retry to mark it ready to use.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowForm(true)}
+                className="text-[11px] font-semibold text-blue-700 hover:text-blue-900 underline underline-offset-2 transition-colors"
+              >
+                Show fallback form
+              </button>
             </div>
-          )}
+          </div>
+        )}
 
-          {isPending && (
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_6px_rgba(59,130,246,0.5)]" />
-              <span className="text-[12px] sm:text-[13px] font-semibold text-blue-700">Verify</span>
-            </div>
-          )}
+        {canConnect && !showForm && (
+          <div className="mt-4 pt-4 border-t border-[#F0EBE4] space-y-3">
+            {isExpired && (
+              <div className="whitespace-pre-wrap rounded-lg bg-amber-50 px-3 py-2.5 text-[12px] leading-relaxed text-amber-800">
+                Your session expired.
 
-          {status === "idle" && !showForm && (
+                Reconnect the platform to continue applying.
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleBrowserStart}
+              disabled={browserLoading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-[13px] font-semibold text-white transition-all duration-150 active:scale-95 disabled:opacity-70"
+              style={{
+                background: `linear-gradient(135deg, ${brandColor} 0%, ${brandColor}CC 100%)`,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+              }}
+            >
+              {browserLoading && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
+              )}
+              {isExpired ? "Reconnect via browser (recommended)" : "Connect via browser (recommended)"}
+            </button>
+
             <button
               type="button"
               onClick={() => { setShowForm(true); setErr(""); }}
-              className="flex items-center gap-1.5 text-[12px] sm:text-[13px] font-semibold text-white
-                px-3 sm:px-4 py-2 rounded-full
-                active:scale-95 transition-all duration-150
-                shadow-[0_2px_8px_rgba(0,0,0,0.15)]"
-              style={{ background: `linear-gradient(135deg, ${brandColor} 0%, ${brandColor}CC 100%)` }}
+              className="w-full text-[12px] font-semibold text-[#786F67] hover:text-[#1A1714] transition-colors"
             >
-              Connect
+              Use email and password instead
             </button>
-          )}
+          </div>
+        )}
 
-          {status === "idle" && showForm && (
-            <button
-              type="button"
-              onClick={() => { setShowForm(false); setErr(""); }}
-              className="text-[11px] sm:text-[12px] text-[#A89F97] hover:text-[#1A1714] transition-colors"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
+        {showForm && status !== "coming_soon" && (
+          <form onSubmit={isPending ? handleRetry : handleSubmit} className="mt-4 space-y-3">
+            <div className="h-px bg-[#F0EBE4]" />
+
+            <div className="space-y-2.5">
+              <input
+                type="email"
+                value={credEmail}
+                onChange={e => setCredEmail(e.target.value)}
+                required
+                autoFocus
+                placeholder={`${name} email`}
+                className="w-full border border-[#EDE9E3] rounded-lg px-3 py-2.5 text-[13px]
+                  focus:border-[#1A1714] focus:outline-none focus:shadow-[0_0_0_3px_rgba(28,23,20,0.06)]
+                  bg-[#FAFAF8] placeholder:text-[#C4BDB5] transition-all"
+              />
+
+              <input
+                type="password"
+                value={credPassword}
+                onChange={e => setCredPassword(e.target.value)}
+                required
+                placeholder={`${name} password`}
+                className="w-full border border-[#EDE9E3] rounded-lg px-3 py-2.5 text-[13px]
+                  focus:border-[#1A1714] focus:outline-none focus:shadow-[0_0_0_3px_rgba(28,23,20,0.06)]
+                  bg-[#FAFAF8] placeholder:text-[#C4BDB5] transition-all"
+              />
+            </div>
+
+            {err && (
+              <div className="rounded-lg bg-[#FEF5F2] border border-[#FDDDD5] px-3 py-2 text-[12px] leading-relaxed text-[#C0392B] whitespace-pre-line">
+                {err}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => { setShowForm(false); setErr(""); }}
+                className="flex-1 px-3 py-2.5 rounded-lg border border-[#E5DED6] text-[12px] font-semibold text-[#786F67]
+                  hover:bg-[#FAF6F1] transition-colors"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex-1 px-3 py-2.5 rounded-lg text-[12px] font-semibold text-white
+                  disabled:opacity-50 active:scale-[0.98] transition-all"
+                style={{ backgroundColor: brandColor }}
+              >
+                {loading ? "Saving..." : isPending ? "Retry verification" : "Save fallback credentials"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {err && !showForm && (
+          <div className="mt-4 rounded-lg bg-[#FEF5F2] border border-[#FDDDD5] px-3 py-2 text-[12px] leading-relaxed text-[#C0392B] whitespace-pre-line">
+            {err}
+          </div>
+        )}
       </div>
 
-      {/* Manual verification pending message */}
-      {isPending && !showForm && (
-        <div className="mt-4 pt-3 border-t border-blue-100">
-          <div className="bg-blue-50 rounded-lg px-3 py-2.5 text-[12px] leading-relaxed">
-            <p className="font-semibold text-blue-800 mb-1">Manual verification needed</p>
-            <p className="text-blue-700 text-[11px] mb-3 leading-relaxed">
-              Your credentials are saved. Log in once on {name} in your browser to complete verification, then click Retry.
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowForm(true)}
-              className="text-[11px] font-semibold text-blue-700 hover:text-blue-900 underline underline-offset-2 transition-colors"
-            >
-              Show form to retry →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Inline credential form */}
-      {status === "idle" && showForm && (
-        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-          <div className="h-px bg-[#F0EBE4]" />
-
-          <div className="space-y-2.5">
-            <input
-              type="email"
-              value={credEmail}
-              onChange={e => setCredEmail(e.target.value)}
-              required
-              autoFocus
-              placeholder={`${name} email`}
-              className="w-full border border-[#EDE9E3] rounded-lg px-3 py-2.5 text-[13px]
-                outline-none focus:border-[#1C1917] focus:shadow-[0_0_0_3px_rgba(28,25,23,0.07)]
-                bg-[#FAFAF8] placeholder:text-[#C4BDB5] transition-all duration-150"
-            />
-            <input
-              type="password"
-              value={credPassword}
-              onChange={e => setCredPassword(e.target.value)}
-              required
-              placeholder="Password"
-              className="w-full border border-[#EDE9E3] rounded-lg px-3 py-2.5 text-[13px]
-                outline-none focus:border-[#1C1917] focus:shadow-[0_0_0_3px_rgba(28,25,23,0.07)]
-                bg-[#FAFAF8] placeholder:text-[#C4BDB5] transition-all duration-150"
-            />
-          </div>
-
-          {err && (
-            <div className={[
-              "rounded-lg px-3 py-2 text-[12px] leading-snug",
-              err.includes("manual") || err.includes("Credentials saved")
-                ? "bg-blue-50 border border-blue-200 text-blue-700"
-                : "bg-rose-50 border border-rose-200 text-rose-600"
-            ].join(" ")}>
-              {err}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading || !credEmail || !credPassword}
-            className="w-full py-2.5 rounded-lg text-[13px] font-semibold text-white
-              disabled:opacity-50 active:scale-[0.98] transition-all duration-150"
-            style={{ background: `linear-gradient(135deg, ${brandColor} 0%, ${brandColor}CC 100%)` }}
-          >
-            {loading ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Verifying…
-              </span>
-            ) : (
-              "Save & Connect"
-            )}
-          </button>
-        </form>
-      )}
-
-      {/* Retry form for verify_pending state */}
-      {isPending && showForm && (
-        <form onSubmit={handleRetry} className="mt-4 space-y-3">
-          <div className="h-px bg-[#F0EBE4]" />
-
-          {err && (
-            <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 text-[12px] text-rose-600 leading-snug">
-              {err}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 rounded-lg text-[13px] font-semibold text-white
-              disabled:opacity-50 active:scale-[0.98] transition-all duration-150"
-            style={{ background: `linear-gradient(135deg, ${brandColor} 0%, ${brandColor}CC 100%)` }}
-          >
-            {loading ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Retrying…
-              </span>
-            ) : (
-              "Retry Verification"
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => { setShowForm(false); setErr(""); }}
-            className="w-full py-2 rounded-lg text-[13px] font-semibold text-[#7C736C]
-              border border-[#DDD7CF] hover:bg-[#F5EFE8] transition-all duration-150"
-          >
-            Later
-          </button>
-        </form>
-      )}
-    </div>
+      <BrowserConnectModal
+        open={browserModalOpen}
+        platformName={name}
+        loginUrl={BROWSER_LOGIN_URLS[id] ?? LOGIN_FALLBACK_URL(id)}
+        loading={browserLoading}
+        error={browserError}
+        primaryLabel={browserPrimaryLabel}
+        statusText={browserStatusText}
+        onContinue={handleBrowserContinue}
+        onCancel={handleBrowserCancel}
+      />
+    </>
   );
+}
+
+function LOGIN_FALLBACK_URL(platformId: string) {
+  return platformId === "indeed"
+    ? "https://secure.indeed.com/account/login"
+    : "https://www.linkedin.com/login";
 }

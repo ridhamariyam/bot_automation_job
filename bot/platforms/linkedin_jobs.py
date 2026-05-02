@@ -43,19 +43,26 @@ class LinkedInJobsAdapter(AbstractPlatform):
         self._user_email = getattr(config, "_user_email", config.email)
 
     async def login(self) -> bool:
-        from bot.browser.session_manager import load_session, save_session, invalidate_session
+        from bot.browser.session_manager import (
+            invalidate_session,
+            load_session,
+            save_session,
+            validate_authenticated_session,
+        )
 
         page = await self.ctx.new_page()
         try:
             # Try saved session first
-            if await load_session(self.ctx, self.config.email, "linkedin"):
-                await page.goto("https://www.linkedin.com/feed",
-                                wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(2)
-                if "feed" in page.url:
+            if await load_session(self.ctx, self._user_email, "linkedin"):
+                if await validate_authenticated_session(self.ctx, "linkedin"):
                     await self._log("LinkedIn session restored", "info")
                     return True
-                invalidate_session(self.config.email, "linkedin")
+                invalidate_session(self._user_email, "linkedin")
+                await self._log("SESSION_EXPIRED", "warn")
+
+            if not self.config.email or not self.config.password:
+                await self._log("LinkedIn session expired — reconnect", "error")
+                return False
 
             # Fresh login
             await page.goto(self.LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
@@ -70,7 +77,7 @@ class LinkedInJobsAdapter(AbstractPlatform):
 
             url = page.url
             if "feed" in url:
-                await save_session(self.ctx, self.config.email, "linkedin")
+                await save_session(self.ctx, self._user_email, "linkedin")
                 await self._log("LinkedIn login successful", "success")
                 return True
             if "checkpoint" in url or "challenge" in url:
@@ -246,7 +253,7 @@ class LinkedInJobsAdapter(AbstractPlatform):
                 else:
                     job.error = "No Easy Apply and no recruiter email found"
 
-            await save_session(self.ctx, self.config.email, "linkedin")
+            await save_session(self.ctx, self._user_email, "linkedin")
             return job
 
         except Exception as e:
