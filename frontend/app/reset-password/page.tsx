@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { Zap, Eye, EyeOff } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -11,15 +12,14 @@ function ResetForm() {
   const token = params.get("token") ?? "";
 
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleReset(e: React.FormEvent) {
     e.preventDefault();
-    if (password !== confirm) { setError("Passwords don't match"); return; }
-    if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
+    if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
     setError("");
     setLoading(true);
     try {
@@ -29,7 +29,7 @@ function ResetForm() {
         body: JSON.stringify({ token, password }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Reset failed");
+      if (!res.ok) throw new Error(data.error || data.detail || "Reset failed");
       setDone(true);
       setTimeout(() => router.push("/login"), 2000);
     } catch (err: unknown) {
@@ -40,74 +40,73 @@ function ResetForm() {
   }
 
   return (
-    <div className="relative w-full max-w-sm">
+    <div className="w-full max-w-sm">
       {done ? (
-        <div className="text-center">
-          <div className="w-14 h-14 rounded-full bg-green-500/10 border border-green-500/20 flex items-center justify-center mx-auto mb-5 text-2xl">✓</div>
-          <h1 className="text-xl font-bold text-white mb-2">Password updated</h1>
-          <p className="text-sm text-white/40">Redirecting you to login…</p>
+        <div className="text-center py-8">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center mx-auto mb-4">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          </div>
+          <h2 className="text-[16px] font-semibold text-slate-900 mb-2">Password updated</h2>
+          <p className="text-[13px] text-slate-500">Redirecting you to sign in…</p>
         </div>
       ) : (
         <>
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-white mb-1">New password</h1>
-            <p className="text-sm text-white/40">Choose a strong password</p>
+          <div className="mb-7">
+            <h1 className="text-[22px] font-semibold text-slate-900 mb-1">Set new password</h1>
+            <p className="text-[13.5px] text-slate-500">Choose a strong password for your account.</p>
           </div>
 
           {!token && (
-            <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400 text-center">
-              Invalid reset link. Please request a new one.
+            <div className="mb-4 px-4 py-3 rounded-lg bg-amber-50 border border-amber-100 text-[13px] text-amber-700">
+              Invalid or missing reset link. Please request a new one.
             </div>
           )}
 
           {error && (
-            <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400 text-center">
+            <div className="mb-4 px-4 py-3 rounded-lg bg-red-50 border border-red-100 text-[13px] text-red-700">
               {error}
-              {error.toLowerCase().includes("register") && (
-                <div className="mt-3">
-                  <Link
-                    href="/register"
-                    className="inline-block bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2 rounded-lg transition"
-                  >
-                    Create an account
-                  </Link>
-                </div>
-              )}
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleReset} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-white/50 mb-1.5">New password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={8}
-                placeholder="Min. 8 characters"
-                className="w-full bg-white/[0.05] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 outline-none focus:border-indigo-500/60 focus:bg-white/[0.07] transition"
-              />
+              <label className="block text-[12px] font-medium text-slate-600 mb-1.5">New password</label>
+              <div className="relative">
+                <input
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  disabled={!token}
+                  placeholder="Min. 8 characters"
+                  className="w-full h-10 px-3 pr-10 rounded-lg border border-slate-200 bg-white text-[13.5px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(!showPw)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition"
+                >
+                  {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-white/50 mb-1.5">Confirm password</label>
-              <input
-                type="password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                required
-                placeholder="••••••••"
-                className="w-full bg-white/[0.05] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 outline-none focus:border-indigo-500/60 focus:bg-white/[0.07] transition"
-              />
-            </div>
+
             <button
               type="submit"
               disabled={loading || !token}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-900/30 text-sm"
+              className="w-full h-10 rounded-lg text-[13.5px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60 transition-colors"
             >
               {loading ? "Updating…" : "Update password"}
             </button>
           </form>
+
+          <p className="text-center text-[13px] text-slate-500 mt-6">
+            <Link href="/login" className="text-indigo-600 hover:text-indigo-700 font-medium transition">
+              ← Back to sign in
+            </Link>
+          </p>
         </>
       )}
     </div>
@@ -116,30 +115,20 @@ function ResetForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <div className="h-screen bg-[#0a0a0f] text-white flex flex-col overflow-hidden">
-      <nav className="flex-none border-b border-white/5">
-        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center">
-          <Link href="/" className="text-base font-bold tracking-tight">
-            <span className="text-indigo-400">Job</span>Rocket
-          </Link>
-        </div>
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      <nav className="bg-white border-b border-slate-100 px-5 h-14 flex items-center">
+        <Link href="/" className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
+            <Zap size={13} className="text-white" fill="white" />
+          </div>
+          <span className="text-[15px] font-semibold text-slate-900">JobRocket</span>
+        </Link>
       </nav>
-
-      <div className="flex-1 flex items-center justify-center px-5 relative overflow-hidden">
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[250px] bg-indigo-600/15 rounded-full blur-[100px]" />
-        </div>
-        <Suspense>
+      <div className="flex-1 flex items-center justify-center px-5 py-12">
+        <Suspense fallback={<div className="skeleton w-64 h-48" />}>
           <ResetForm />
         </Suspense>
       </div>
-
-      <footer className="flex-none border-t border-white/5 py-4 px-5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-white/20">
-          <span><span className="text-indigo-400">Job</span>Rocket</span>
-          <span>© {new Date().getFullYear()} · Built by Ridha Mariyam | Aiviora | CodeforSuree</span>
-        </div>
-      </footer>
     </div>
   );
 }

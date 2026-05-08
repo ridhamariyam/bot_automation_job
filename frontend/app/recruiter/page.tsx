@@ -1,9 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "../lib/useAuth";
+import { apiFetch } from "../lib/api";
+import { DashboardLayout } from "../components/layout/DashboardLayout";
+import { Badge } from "../components/ui/Badge";
+import { EmptyState } from "../components/ui/EmptyState";
+import { SkeletonCard } from "../components/ui/Skeleton";
+import { Users, Phone, MessageCircle, Mail, ExternalLink, CheckCircle } from "lucide-react";
 
-type RecruiterContact = {
+type Recruiter = {
   id: string;
   recruiter_name: string | null;
   phone: string | null;
@@ -18,348 +24,222 @@ type RecruiterContact = {
   created_at: string;
 };
 
-type Stats = {
-  total: number;
-  pending_call: number;
-  whatsapp_sent: number;
-  by_status: Record<string, number>;
+const STATUS_LABELS: Record<string, string> = {
+  pending_call:   "Pending",
+  called:         "Called",
+  whatsapp_sent:  "WhatsApp Sent",
+  replied:        "Replied",
+  ignored:        "Ignored",
 };
 
-const API = process.env.NEXT_PUBLIC_API_URL as string;
-
-function authHeaders() {
-  return { Authorization: `Bearer ${localStorage.getItem("token")}` };
-}
-
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  pending_call:  { label: "Call Pending",    color: "bg-amber-100 text-amber-700" },
-  called:        { label: "Called",          color: "bg-blue-100 text-blue-700" },
-  whatsapp_sent: { label: "WhatsApp Sent",   color: "bg-green-100 text-green-700" },
-  replied:       { label: "Replied",         color: "bg-purple-100 text-purple-700" },
-  ignored:       { label: "Ignored",         color: "bg-gray-100 text-gray-500" },
+const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "muted" | "info"> = {
+  pending_call:  "warning",
+  called:        "info",
+  whatsapp_sent: "info",
+  replied:       "success",
+  ignored:       "muted",
 };
 
 export default function RecruiterPage() {
   useAuth();
-
-  const [email, setEmail]         = useState("");
-  const [contacts, setContacts]   = useState<RecruiterContact[]>([]);
-  const [stats, setStats]         = useState<Stats | null>(null);
-  const [filter, setFilter]       = useState("pending_call");
-  const [scanning, setScanning]   = useState(false);
-  const [sending, setSending]     = useState<string | null>(null);
-  const [scanMsg, setScanMsg]     = useState("");
-  const [loading, setLoading]     = useState(true);
-  const [toast, setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
+  const router = useRouter();
+  const [recruiters, setRecruiters] = useState<Recruiter[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [sendingWa, setSendingWa] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
 
   function showToast(msg: string, ok: boolean) {
     setToast({ msg, ok });
     setTimeout(() => setToast(null), 4000);
   }
 
-  const load = async (userEmail: string, statusFilter: string) => {
-    try {
-      const [contactsRes, statsRes] = await Promise.all([
-        fetch(`${API}/api/recruiter/${encodeURIComponent(userEmail)}?status=${statusFilter}`,
-          { headers: authHeaders() }),
-        fetch(`${API}/api/recruiter/${encodeURIComponent(userEmail)}/stats`,
-          { headers: authHeaders() }),
-      ]);
-      if (contactsRes.ok) setContacts(await contactsRes.json());
-      if (statsRes.ok)    setStats(await statsRes.json());
-    } catch {
-      // silent
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
     const stored = localStorage.getItem("jobrocket_user");
-    if (!stored) return;
+    if (!stored) { router.push("/login"); return; }
     const u = JSON.parse(stored);
     setEmail(u.email);
-    load(u.email, filter);
-  }, []);
+    apiFetch<Recruiter[]>(`/api/recruiter/list?email=${encodeURIComponent(u.email)}`)
+      .then(d => setRecruiters(Array.isArray(d) ? d : []))
+      .catch(() => setRecruiters([]))
+      .finally(() => setLoading(false));
+  }, [router]);
 
-  const handleFilterChange = (f: string) => {
-    setFilter(f);
-    if (email) load(email, f);
-  };
-
-  const updateStatus = async (id: string, status: string) => {
-    await fetch(`${API}/api/recruiter/${id}`, {
-      method:  "PATCH",
-      headers: { ...authHeaders(), "Content-Type": "application/json" },
-      body:    JSON.stringify({ status }),
-    });
-    if (email) load(email, filter);
-  };
-
-  const sendWhatsApp = async (contact: RecruiterContact) => {
-    setSending(contact.id);
+  async function sendWhatsApp(r: Recruiter) {
+    const user = JSON.parse(localStorage.getItem("jobrocket_user") ?? "{}");
+    const phone = r.whatsapp || r.phone;
+    if (!phone) { showToast("No phone number available for this recruiter.", false); return; }
+    setSendingWa(r.id);
     try {
-      const res = await fetch(`${API}/api/recruiter/send-whatsapp`, {
-        method:  "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body:    JSON.stringify({ contact_id: contact.id, user_email: email }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(`WhatsApp sent to ${contact.phone || contact.whatsapp}`, true);
-        if (email) load(email, filter);
+      const res = await apiFetch(`/api/recruiter/whatsapp`, {
+        method: "POST",
+        body: JSON.stringify({
+          user_email: email,
+          recruiter_id: r.id,
+          phone,
+          recruiter_name: r.recruiter_name,
+          user_name: user.name,
+        }),
+      }) as { success?: boolean; message?: string };
+      if (res.success) {
+        showToast("WhatsApp message sent.", true);
+        setRecruiters(prev => prev.map(x =>
+          x.id === r.id ? { ...x, status: "whatsapp_sent", whatsapp_sent_at: new Date().toISOString() } : x
+        ));
       } else {
-        showToast(data.error || data.detail || "Failed to send WhatsApp", false);
+        showToast(res.message ?? "Failed to send message.", false);
       }
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : "Failed to send message.", false);
     } finally {
-      setSending(null);
+      setSendingWa(null);
     }
-  };
+  }
 
-  const scanFeed = async () => {
-    setScanning(true);
-    setScanMsg("");
+  async function updateStatus(id: string, status: string) {
     try {
-      const res = await fetch(`${API}/api/recruiter/scan-feed`, {
-        method:  "POST",
-        headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body:    JSON.stringify({ user_email: email, max_posts: 30 }),
+      await apiFetch(`/api/recruiter/${id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
       });
-      const data = await res.json();
-      setScanMsg(data.message || "Scan started.");
-      // Reload after 15s
-      setTimeout(() => email && load(email, filter), 15000);
+      setRecruiters(prev => prev.map(r => r.id === id ? { ...r, status } : r));
     } catch {
-      setScanMsg("Scan request failed.");
-    } finally {
-      setScanning(false);
+      showToast("Failed to update status.", false);
     }
-  };
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <Link
-              href="/dashboard"
-              className="text-gray-400 hover:text-gray-600 transition p-1.5 rounded-lg hover:bg-gray-100 shrink-0"
-              aria-label="Back to Dashboard"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={2}>
-                <path d="M10 12L6 8l4-4" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </Link>
-            <div className="min-w-0">
-              <h1 className="text-lg sm:text-2xl font-bold text-gray-900 truncate">Recruiter Contacts</h1>
-              <p className="text-xs sm:text-sm text-gray-500 hidden sm:block">Hiring posts detected by the bot</p>
-            </div>
-          </div>
-          <nav className="flex gap-3 text-sm shrink-0">
-            <Link href="/settings" className="text-gray-500 hover:text-gray-900">Settings</Link>
-          </nav>
+    <DashboardLayout title="Recruiters">
+      <div className="mb-5">
+        <p className="text-[13.5px] text-slate-500">
+          Recruiters detected from LinkedIn hiring posts. Contact them directly to accelerate your search.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="grid sm:grid-cols-2 gap-4">
+          {[1, 2, 3, 4].map(i => <SkeletonCard key={i} />)}
         </div>
-      </header>
-
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-4 sm:space-y-6">
-
-        {/* Stats row */}
-        {stats && (
-          <div className="grid grid-cols-3 sm:grid-cols-3 gap-3 sm:gap-4">
-            {[
-              { label: "Total Found",     value: stats.total,         color: "text-blue-600" },
-              { label: "Pending Call",    value: stats.pending_call,  color: "text-amber-600" },
-              { label: "WhatsApp Sent",   value: stats.whatsapp_sent, color: "text-green-600" },
-            ].map((s) => (
-              <div key={s.label} className="bg-white rounded-xl shadow-sm p-3 sm:p-4 text-center">
-                <p className={`text-2xl sm:text-3xl font-bold ${s.color}`}>{s.value}</p>
-                <p className="text-xs sm:text-sm text-gray-500 mt-1 leading-snug">{s.label}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Scan + Filter toolbar */}
-        <div className="bg-white rounded-xl shadow-sm p-4 flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={scanFeed}
-              disabled={scanning || !email}
-              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shrink-0"
-            >
-              {scanning ? "Scanning…" : "Scan LinkedIn Feed"}
-            </button>
-
-            {scanMsg && (
-              <span className="text-sm text-green-700 bg-green-50 px-3 py-1 rounded-full">
-                {scanMsg}
-              </span>
-            )}
-          </div>
-
-          <div className="flex gap-2 flex-wrap">
-            {Object.entries(STATUS_LABELS).map(([key, { label }]) => (
-              <button
-                key={key}
-                onClick={() => handleFilterChange(key)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                  filter === key
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              onClick={() => handleFilterChange("")}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                filter === ""
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-              }`}
-            >
-              All
-            </button>
-          </div>
-        </div>
-
-        {/* Contact cards */}
-        {loading ? (
-          <div className="text-center py-16 text-gray-400">Loading contacts…</div>
-        ) : contacts.length === 0 ? (
-          <div className="bg-white rounded-xl shadow-sm p-12 text-center">
-            <p className="text-gray-500 text-lg mb-2">No recruiter contacts yet.</p>
-            <p className="text-gray-400 text-sm mb-6">
-              Run the bot or click "Scan LinkedIn Feed" to find hiring posts.
-            </p>
-            <button
-              onClick={scanFeed}
-              disabled={scanning || !email}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-lg text-sm"
-            >
-              Scan Now
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {contacts.map((contact) => (
-              <div
-                key={contact.id}
-                className="bg-white rounded-xl shadow-sm p-5 flex flex-col sm:flex-row sm:items-start gap-4"
-              >
-                {/* Left — recruiter info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold text-gray-900 truncate">
-                      {contact.recruiter_name || "Unknown Recruiter"}
-                    </span>
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        STATUS_LABELS[contact.status]?.color || "bg-gray-100 text-gray-500"
-                      }`}
-                    >
-                      {STATUS_LABELS[contact.status]?.label || contact.status}
-                    </span>
-                  </div>
-
-                  {contact.inferred_title && (
-                    <p className="text-sm text-blue-700 font-medium mb-1">
-                      {contact.inferred_title}
+      ) : recruiters.length === 0 ? (
+        <EmptyState
+          icon={<Users size={20} />}
+          title="No recruiters found yet"
+          description="The bot detects recruiters from LinkedIn hiring posts as it runs. Start the bot to collect contacts."
+          action={
+            <a href="/scoring" className="px-4 py-2 rounded-lg text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">
+              Go to Automation
+            </a>
+          }
+        />
+      ) : (
+        <>
+          <p className="text-[12.5px] text-slate-400 mb-4">{recruiters.length} recruiter{recruiters.length !== 1 ? "s" : ""} found</p>
+          <div className="grid sm:grid-cols-2 gap-4">
+            {recruiters.map(r => (
+              <div key={r.id} className="bg-white rounded-xl border border-slate-100 p-5">
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[14px] font-semibold text-slate-900 truncate">
+                      {r.recruiter_name || "Unknown Recruiter"}
                     </p>
-                  )}
-
-                  <div className="flex flex-wrap gap-3 text-sm text-gray-600 mb-2">
-                    {contact.phone && (
-                      <a href={`tel:${contact.phone}`} className="flex items-center gap-1 hover:text-blue-600">
-                        <span>📞</span> {contact.phone}
-                      </a>
+                    {r.inferred_title && (
+                      <p className="text-[12px] text-slate-500 truncate mt-0.5">{r.inferred_title}</p>
                     )}
-                    {contact.whatsapp && (
-                      <a
-                        href={`https://wa.me/${contact.whatsapp.replace(/\D/g, "")}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-1 hover:text-green-600"
-                      >
-                        <span>💬</span> WhatsApp
-                      </a>
-                    )}
-                    {contact.email && (
-                      <a href={`mailto:${contact.email}`} className="flex items-center gap-1 hover:text-blue-600">
-                        <span>✉️</span> {contact.email}
-                      </a>
-                    )}
-                    {contact.post_url && (
-                      <a
-                        href={contact.post_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-1 hover:text-blue-600"
-                      >
-                        <span>🔗</span> View Post
-                      </a>
-                    )}
+                    <p className="text-[11.5px] text-slate-400 mt-0.5 capitalize">{r.platform.replace("_", " ")}</p>
                   </div>
+                  <Badge variant={STATUS_VARIANT[r.status] ?? "default"}>
+                    {STATUS_LABELS[r.status] ?? r.status}
+                  </Badge>
+                </div>
 
-                  {contact.post_text && (
-                    <p className="text-xs text-gray-400 line-clamp-2">{contact.post_text}</p>
+                {/* Contact info */}
+                <div className="space-y-1.5 mb-4">
+                  {(r.whatsapp || r.phone) && (
+                    <div className="flex items-center gap-2 text-[13px] text-slate-600">
+                      <Phone size={13} className="text-slate-400 shrink-0" />
+                      {r.whatsapp || r.phone}
+                    </div>
                   )}
+                  {r.email && (
+                    <div className="flex items-center gap-2 text-[13px] text-slate-600">
+                      <Mail size={13} className="text-slate-400 shrink-0" />
+                      {r.email}
+                    </div>
+                  )}
+                </div>
 
-                  <p className="text-xs text-gray-300 mt-1">
-                    Found {new Date(contact.created_at).toLocaleDateString()}
-                    {contact.whatsapp_sent_at &&
-                      ` · WhatsApp sent ${new Date(contact.whatsapp_sent_at).toLocaleDateString()}`}
+                {/* Post snippet */}
+                {r.post_text && (
+                  <div className="bg-slate-50 rounded-lg px-3 py-2.5 mb-4">
+                    <p className="text-[12px] text-slate-500 line-clamp-2 leading-relaxed">{r.post_text}</p>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex items-center gap-2">
+                  {(r.whatsapp || r.phone) && (
+                    <button
+                      onClick={() => sendWhatsApp(r)}
+                      disabled={sendingWa === r.id || r.status === "whatsapp_sent"}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12.5px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+                    >
+                      {r.status === "whatsapp_sent" ? (
+                        <><CheckCircle size={13} /> Sent</>
+                      ) : (
+                        <><MessageCircle size={13} /> {sendingWa === r.id ? "Sending…" : "WhatsApp"}</>
+                      )}
+                    </button>
+                  )}
+                  {r.post_url && (
+                    <a
+                      href={r.post_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12.5px] font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 transition-colors"
+                    >
+                      <ExternalLink size={12} /> View post
+                    </a>
+                  )}
+                  <select
+                    value={r.status}
+                    onChange={e => updateStatus(r.id, e.target.value)}
+                    className="ml-auto text-[11.5px] rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition cursor-pointer"
+                  >
+                    {Object.entries(STATUS_LABELS).map(([val, label]) => (
+                      <option key={val} value={val}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {r.whatsapp_sent_at && (
+                  <p className="text-[11px] text-slate-400 mt-3">
+                    Sent {new Date(r.whatsapp_sent_at).toLocaleDateString()}
                   </p>
-                </div>
-
-                {/* Right — actions */}
-                <div className="flex sm:flex-col gap-2 shrink-0">
-                  {(contact.phone || contact.whatsapp) && contact.status !== "whatsapp_sent" && (
-                    <button
-                      onClick={() => sendWhatsApp(contact)}
-                      disabled={sending === contact.id}
-                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white text-xs font-semibold px-3 py-2 rounded-lg transition"
-                    >
-                      {sending === contact.id ? "Sending…" : "Send WhatsApp"}
-                    </button>
-                  )}
-
-                  {contact.status === "pending_call" && (
-                    <button
-                      onClick={() => updateStatus(contact.id, "called")}
-                      className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition"
-                    >
-                      Mark Called
-                    </button>
-                  )}
-
-                  {contact.status !== "ignored" && (
-                    <button
-                      onClick={() => updateStatus(contact.id, "ignored")}
-                      className="bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-semibold px-3 py-2 rounded-lg transition"
-                    >
-                      Ignore
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
             ))}
           </div>
-        )}
-      </main>
+        </>
+      )}
 
+      {/* Toast */}
       {toast && (
-        <div
-          className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg transition-all duration-300 ${
-            toast.ok ? "bg-green-600" : "bg-red-600"
-          }`}
-          aria-live="polite"
-        >
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-5 py-3 rounded-xl shadow-lg text-[13.5px] font-medium text-white transition-all ${
+          toast.ok ? "bg-emerald-600" : "bg-red-600"
+        }`}>
+          {toast.ok ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
           {toast.msg}
         </div>
       )}
-    </div>
+    </DashboardLayout>
+  );
+}
+
+function AlertCircle({ size, className }: { size: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
   );
 }

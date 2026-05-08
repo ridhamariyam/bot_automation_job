@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Zap, Eye, EyeOff } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -9,9 +10,13 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [showForgot, setShowForgot] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -35,208 +40,161 @@ export default function LoginPage() {
     }
   }
 
-  if (showForgot) return <ForgotPassword onBack={() => setShowForgot(false)} />;
-
-  return (
-    <div className="h-screen bg-[#0a0a0f] text-white flex flex-col overflow-hidden">
-      <nav className="flex-none border-b border-white/5">
-        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between">
-          <Link href="/" className="text-base font-bold tracking-tight">
-            <span className="text-indigo-400">Job</span>Rocket
-          </Link>
-          <p className="text-sm text-white/40">
-            No account?{" "}
-            <Link href="/register" className="text-indigo-400 hover:text-indigo-300 transition font-medium">
-              Sign up free
-            </Link>
-          </p>
-        </div>
-      </nav>
-
-      <div className="flex-1 flex items-center justify-center px-5 relative overflow-hidden">
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[300px] bg-indigo-600/15 rounded-full blur-[100px]" />
-        </div>
-
-        <div className="relative w-full max-w-sm">
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-white mb-1">Welcome back</h1>
-            <p className="text-sm text-white/40">Log in to your JobRocket account</p>
-          </div>
-
-          {error && (
-            <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400 text-center">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-white/50 mb-1.5">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                placeholder="you@example.com"
-                className="w-full bg-white/[0.05] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 outline-none focus:border-indigo-500/60 focus:bg-white/[0.07] transition"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-medium text-white/50">Password</label>
-                <button
-                  type="button"
-                  onClick={() => setShowForgot(true)}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 transition"
-                >
-                  Forgot?
-                </button>
-              </div>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                placeholder="••••••••"
-                className="w-full bg-white/[0.05] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 outline-none focus:border-indigo-500/60 focus:bg-white/[0.07] transition"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-900/30 text-sm mt-2"
-            >
-              {loading ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <footer className="flex-none border-t border-white/5 py-4 px-5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-white/20">
-          <span><span className="text-indigo-400">Job</span>Rocket</span>
-          <span>© {new Date().getFullYear()} · Built with AI</span>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-function ForgotPassword({ onBack }: { onBack: () => void }) {
-  const [email, setEmail] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleForgot(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
-    setLoading(true);
+    setForgotLoading(true);
     try {
-      const res = await fetch(`${API}/api/auth/forgot-password`, {
+      await fetch(`${API}/api/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: forgotEmail }),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || data.detail || "Failed to send reset email");
-      }
-      setSent(true);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      setForgotSent(true);
     } finally {
-      setLoading(false);
+      setForgotLoading(false);
     }
   }
 
   return (
-    <div className="h-screen bg-[#0a0a0f] text-white flex flex-col overflow-hidden">
-      <nav className="flex-none border-b border-white/5">
-        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center">
-          <Link href="/" className="text-base font-bold tracking-tight">
-            <span className="text-indigo-400">Job</span>Rocket
-          </Link>
-        </div>
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      {/* Nav */}
+      <nav className="bg-white border-b border-slate-100 px-5 h-14 flex items-center">
+        <Link href="/" className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
+            <Zap size={13} className="text-white" fill="white" />
+          </div>
+          <span className="text-[15px] font-semibold text-slate-900">JobRocket</span>
+        </Link>
       </nav>
 
-      <div className="flex-1 flex items-center justify-center px-5 relative overflow-hidden">
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[250px] bg-indigo-600/15 rounded-full blur-[100px]" />
-        </div>
+      <div className="flex-1 flex items-center justify-center px-5 py-12">
+        <div className="w-full max-w-sm">
 
-        <div className="relative w-full max-w-sm">
-          {sent ? (
-            <div className="text-center">
-              <div className="w-14 h-14 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto mb-5 text-2xl">
-                ✉️
-              </div>
-              <h1 className="text-xl font-bold text-white mb-2">Check your inbox</h1>
-              <p className="text-sm text-white/40 mb-6">
-                We sent a password reset link to <span className="text-white/70">{email}</span>
-              </p>
-              <button
-                onClick={onBack}
-                className="text-sm text-indigo-400 hover:text-indigo-300 transition"
-              >
-                ← Back to login
-              </button>
-            </div>
-          ) : (
+          {!forgotMode ? (
             <>
-              <div className="text-center mb-8">
-                <h1 className="text-2xl font-bold text-white mb-1">Reset password</h1>
-                <p className="text-sm text-white/40">We&apos;ll send a reset link to your email</p>
+              <div className="mb-7">
+                <h1 className="text-[22px] font-semibold text-slate-900 mb-1">Welcome back</h1>
+                <p className="text-[13.5px] text-slate-500">Sign in to your JobRocket account</p>
               </div>
 
               {error && (
-                <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400 text-center">
+                <div className="mb-4 px-4 py-3 rounded-lg bg-red-50 border border-red-100 text-[13px] text-red-700">
                   {error}
                 </div>
               )}
 
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleLogin} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-white/50 mb-1.5">Email</label>
+                  <label className="block text-[12px] font-medium text-slate-600 mb-1.5">Email</label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     placeholder="you@example.com"
-                    className="w-full bg-white/[0.05] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-white/20 outline-none focus:border-indigo-500/60 focus:bg-white/[0.07] transition"
+                    className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-[13.5px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-[12px] font-medium text-slate-600 mb-1.5">Password</label>
+                  <div className="relative">
+                    <input
+                      type={showPw ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      placeholder="••••••••"
+                      className="w-full h-10 px-3 pr-10 rounded-lg border border-slate-200 bg-white text-[13.5px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPw(!showPw)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition"
+                    >
+                      {showPw ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                  <div className="flex justify-end mt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setForgotMode(true)}
+                      className="text-[12px] text-indigo-600 hover:text-indigo-700 transition"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                 </div>
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition shadow-lg shadow-indigo-900/30 text-sm"
+                  className="w-full h-10 rounded-lg text-[13.5px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60 transition-colors"
                 >
-                  {loading ? "Sending…" : "Send reset link"}
+                  {loading ? "Signing in…" : "Sign in"}
                 </button>
               </form>
 
+              <p className="text-center text-[13px] text-slate-500 mt-6">
+                No account?{" "}
+                <Link href="/register" className="text-indigo-600 hover:text-indigo-700 font-medium transition">
+                  Create one free
+                </Link>
+              </p>
+            </>
+          ) : (
+            <>
               <button
-                onClick={onBack}
-                className="mt-5 w-full text-center text-sm text-white/30 hover:text-white/60 transition"
+                onClick={() => { setForgotMode(false); setForgotSent(false); }}
+                className="text-[12px] text-slate-500 hover:text-slate-700 mb-6 flex items-center gap-1 transition"
               >
-                ← Back to login
+                ← Back to sign in
               </button>
+
+              {forgotSent ? (
+                <div className="text-center py-8">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center mx-auto mb-4">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  </div>
+                  <h2 className="text-[16px] font-semibold text-slate-900 mb-2">Check your email</h2>
+                  <p className="text-[13px] text-slate-500 leading-relaxed">
+                    If <strong>{forgotEmail}</strong> is registered, a reset link has been sent. Check your inbox.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-7">
+                    <h1 className="text-[22px] font-semibold text-slate-900 mb-1">Reset password</h1>
+                    <p className="text-[13.5px] text-slate-500">Enter your email and we will send a reset link.</p>
+                  </div>
+                  <form onSubmit={handleForgot} className="space-y-4">
+                    <div>
+                      <label className="block text-[12px] font-medium text-slate-600 mb-1.5">Email</label>
+                      <input
+                        type="email"
+                        value={forgotEmail}
+                        onChange={(e) => setForgotEmail(e.target.value)}
+                        required
+                        placeholder="you@example.com"
+                        className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-[13.5px] text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={forgotLoading}
+                      className="w-full h-10 rounded-lg text-[13.5px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60 transition-colors"
+                    >
+                      {forgotLoading ? "Sending…" : "Send reset link"}
+                    </button>
+                  </form>
+                </>
+              )}
             </>
           )}
         </div>
       </div>
-
-      <footer className="flex-none border-t border-white/5 py-4 px-5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-white/20">
-          <span><span className="text-indigo-400">Job</span>Rocket</span>
-          <span>© {new Date().getFullYear()} · Built with AI</span>
-        </div>
-      </footer>
     </div>
   );
 }

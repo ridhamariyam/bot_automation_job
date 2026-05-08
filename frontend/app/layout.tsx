@@ -1,23 +1,27 @@
 import type { Metadata, Viewport } from "next";
-import { Geist } from "next/font/google";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
 
 export const viewport: Viewport = {
-  themeColor: "#111827",
+  themeColor: "#ffffff",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
 };
 
 export const metadata: Metadata = {
-  title: "JobRocket — AI Job Bot That Applies For You",
+  title: "JobRocket — AI-Powered Job Application Automation",
   description:
-    "Answer 5 questions, upload your CV — our AI bot applies to 50+ jobs daily on your behalf.",
+    "Automate your job search intelligently. JobRocket applies to matching jobs across LinkedIn, Indeed, Glassdoor and more — so you can focus on interviews.",
   appleWebApp: {
     capable: true,
-    statusBarStyle: "black-translucent",
+    statusBarStyle: "default",
     title: "JobRocket",
   },
   formatDetection: { telephone: false },
@@ -25,11 +29,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geist.variable} h-full`} suppressHydrationWarning>
-      <body
-        className="min-h-full bg-white text-gray-900 antialiased font-sans"
-        suppressHydrationWarning
-      >
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
+      <body suppressHydrationWarning>
         {children}
       </body>
     </html>
