@@ -212,32 +212,32 @@ export default function ResumePage() {
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Resume Builder</h1>
-            <p className="text-sm text-gray-500">Build, tailor, and export your professional resume</p>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Resume Builder</h1>
+            <p className="text-xs sm:text-sm text-gray-500 hidden sm:block">Build, tailor, and export your professional resume</p>
           </div>
-          <div className="flex gap-3 items-center">
-            <Link href="/dashboard" className="text-sm text-blue-600 hover:underline">← Dashboard</Link>
+          <div className="flex gap-2 items-center flex-wrap">
+            <Link href="/dashboard" className="text-sm text-blue-600 hover:underline shrink-0">← Dashboard</Link>
             <button onClick={() => fileRef.current?.click()}
-              className="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg font-medium transition">
-              Import CV (PDF)
+              className="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg font-medium transition shrink-0">
+              Import CV
             </button>
             <input ref={fileRef} type="file" accept=".pdf" className="hidden" onChange={uploadPDF} />
             <button onClick={() => setOptimizeOpen(true)}
-              className="text-sm bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg font-medium transition">
+              className="text-sm bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg font-medium transition shrink-0">
               AI Tailor
             </button>
             <button onClick={() => downloadFile("pdf")}
-              className="text-sm bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg font-medium transition">
+              className="text-sm bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg font-medium transition shrink-0">
               PDF
             </button>
             <button onClick={() => downloadFile("excel")}
-              className="text-sm bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg font-medium transition">
+              className="hidden sm:block text-sm bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg font-medium transition shrink-0">
               Excel
             </button>
             <button onClick={save} disabled={saving}
-              className="text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-4 py-1.5 rounded-lg font-semibold transition">
+              className="text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-4 py-1.5 rounded-lg font-semibold transition shrink-0">
               {saving ? "Saving..." : "Save"}
             </button>
           </div>
@@ -251,7 +251,7 @@ export default function ResumePage() {
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-6 py-6 grid grid-cols-[260px_1fr] gap-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4 sm:gap-6">
         {/* Sidebar: resume list */}
         <aside>
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">

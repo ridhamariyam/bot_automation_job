@@ -676,6 +676,14 @@ function SettingsInner() {
             </button>
           )}
         </form>
+
+        {/* Plan info */}
+        <div className="mt-6 flex items-center justify-between px-1">
+          <p className="text-[12px] text-[#B0A89E]">All features included · Free plan</p>
+          <Link href="/billing" className="text-[12px] font-medium text-[#A89F96] hover:text-[#1C1917] transition underline underline-offset-2">
+            View plan details
+          </Link>
+        </div>
       </div>
 
       {successToast && (

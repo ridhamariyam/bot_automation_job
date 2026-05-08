@@ -134,7 +134,7 @@ export default function RegisterPage() {
       <footer className="flex-none border-t border-white/5 py-4 px-5">
         <div className="max-w-6xl mx-auto flex items-center justify-between text-xs text-white/20">
           <span><span className="text-indigo-400">Job</span>Rocket</span>
-          <span>© {new Date().getFullYear()} · Build by Ridha Mariyam | Aiviora | CodeforSuree</span>
+          <span>© {new Date().getFullYear()} · Built by Ridha Mariyam | Aiviora | CodeforSuree</span>
         </div>
       </footer>
     </div>

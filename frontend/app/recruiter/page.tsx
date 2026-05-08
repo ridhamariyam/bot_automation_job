@@ -50,6 +50,12 @@ export default function RecruiterPage() {
   const [sending, setSending]     = useState<string | null>(null);
   const [scanMsg, setScanMsg]     = useState("");
   const [loading, setLoading]     = useState(true);
+  const [toast, setToast]         = useState<{ msg: string; ok: boolean } | null>(null);
+
+  function showToast(msg: string, ok: boolean) {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 4000);
+  }
 
   const load = async (userEmail: string, statusFilter: string) => {
     try {
@@ -100,10 +106,10 @@ export default function RecruiterPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        alert(`WhatsApp sent to ${contact.phone || contact.whatsapp}`);
+        showToast(`WhatsApp sent to ${contact.phone || contact.whatsapp}`, true);
         if (email) load(email, filter);
       } else {
-        alert(`Failed: ${data.error || data.detail}`);
+        showToast(data.error || data.detail || "Failed to send WhatsApp", false);
       }
     } finally {
       setSending(null);
@@ -134,53 +140,65 @@ export default function RecruiterPage() {
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Recruiter Contacts</h1>
-            <p className="text-sm text-gray-500">Hiring posts detected by the bot</p>
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Link
+              href="/dashboard"
+              className="text-gray-400 hover:text-gray-600 transition p-1.5 rounded-lg hover:bg-gray-100 shrink-0"
+              aria-label="Back to Dashboard"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth={2}>
+                <path d="M10 12L6 8l4-4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </Link>
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-2xl font-bold text-gray-900 truncate">Recruiter Contacts</h1>
+              <p className="text-xs sm:text-sm text-gray-500 hidden sm:block">Hiring posts detected by the bot</p>
+            </div>
           </div>
-          <nav className="flex gap-4 text-sm">
-            <Link href="/dashboard" className="text-gray-500 hover:text-gray-900">Dashboard</Link>
-            <Link href="/settings"  className="text-gray-500 hover:text-gray-900">Settings</Link>
+          <nav className="flex gap-3 text-sm shrink-0">
+            <Link href="/settings" className="text-gray-500 hover:text-gray-900">Settings</Link>
           </nav>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-4 sm:space-y-6">
 
         {/* Stats row */}
         {stats && (
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 sm:grid-cols-3 gap-3 sm:gap-4">
             {[
               { label: "Total Found",     value: stats.total,         color: "text-blue-600" },
               { label: "Pending Call",    value: stats.pending_call,  color: "text-amber-600" },
               { label: "WhatsApp Sent",   value: stats.whatsapp_sent, color: "text-green-600" },
             ].map((s) => (
-              <div key={s.label} className="bg-white rounded-xl shadow-sm p-4 text-center">
-                <p className={`text-3xl font-bold ${s.color}`}>{s.value}</p>
-                <p className="text-sm text-gray-500 mt-1">{s.label}</p>
+              <div key={s.label} className="bg-white rounded-xl shadow-sm p-3 sm:p-4 text-center">
+                <p className={`text-2xl sm:text-3xl font-bold ${s.color}`}>{s.value}</p>
+                <p className="text-xs sm:text-sm text-gray-500 mt-1 leading-snug">{s.label}</p>
               </div>
             ))}
           </div>
         )}
 
         {/* Scan + Filter toolbar */}
-        <div className="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-3">
-          <button
-            onClick={scanFeed}
-            disabled={scanning || !email}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold px-4 py-2 rounded-lg text-sm transition"
-          >
-            {scanning ? "Scanning…" : "Scan LinkedIn Feed"}
-          </button>
+        <div className="bg-white rounded-xl shadow-sm p-4 flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={scanFeed}
+              disabled={scanning || !email}
+              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold px-4 py-2 rounded-lg text-sm transition shrink-0"
+            >
+              {scanning ? "Scanning…" : "Scan LinkedIn Feed"}
+            </button>
 
-          {scanMsg && (
-            <span className="text-sm text-green-700 bg-green-50 px-3 py-1 rounded-full">
-              {scanMsg}
-            </span>
-          )}
+            {scanMsg && (
+              <span className="text-sm text-green-700 bg-green-50 px-3 py-1 rounded-full">
+                {scanMsg}
+              </span>
+            )}
+          </div>
 
-          <div className="ml-auto flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {Object.entries(STATUS_LABELS).map(([key, { label }]) => (
               <button
                 key={key}
@@ -331,6 +349,17 @@ export default function RecruiterPage() {
           </div>
         )}
       </main>
+
+      {toast && (
+        <div
+          className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl text-sm font-semibold text-white shadow-lg transition-all duration-300 ${
+            toast.ok ? "bg-green-600" : "bg-red-600"
+          }`}
+          aria-live="polite"
+        >
+          {toast.msg}
+        </div>
+      )}
     </div>
   );
 }

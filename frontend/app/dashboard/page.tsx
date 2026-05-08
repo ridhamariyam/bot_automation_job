@@ -159,7 +159,15 @@ export default function DashboardPage() {
     setBotError("");
     try {
       if (botRunning) {
-        await apiFetch(`/api/bot/stop?email=${encodeURIComponent(user.email)}`);
+        const token = localStorage.getItem("token") ?? "";
+        const stopRes = await fetch(`${API}/api/bot/stop?email=${encodeURIComponent(user.email)}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!stopRes.ok) {
+          const d = await stopRes.json().catch(() => ({}));
+          throw new Error(d.detail ?? "Could not stop bot");
+        }
         setBotRunning(false);
       } else {
         const token = localStorage.getItem("token") ?? "";
@@ -232,6 +240,12 @@ export default function DashboardPage() {
               className="hidden sm:block px-3 py-1.5 text-[13px] text-white/55 hover:text-white hover:bg-white/10 rounded-lg transition"
             >
               Resume
+            </Link>
+            <Link
+              href="/recruiter"
+              className="hidden sm:block px-3 py-1.5 text-[13px] text-white/55 hover:text-white hover:bg-white/10 rounded-lg transition"
+            >
+              Recruiter
             </Link>
             <Link
               href="/settings"

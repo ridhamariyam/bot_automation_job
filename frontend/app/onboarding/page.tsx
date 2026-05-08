@@ -353,7 +353,7 @@ export default function OnboardingPage() {
               {saving ? "Saving…" :
                step === 4 ? "Go to dashboard →" :
                step === 2 && !liVerified ? "Skip for now →" :
-               step === 3 ? "Next (skip CV)" : "Next →"}
+               step === 3 ? (cvFile ? "Next →" : "Next (skip CV)") : "Next →"}
             </button>
           </div>
 

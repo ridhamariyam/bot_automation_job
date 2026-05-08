@@ -1,6 +1,7 @@
 "use client";
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "../lib/useAuth";
 import { JOB_TYPES, WORK_MODES, EXP_LEVELS, DATE_POSTED, COMPANY_SIZES, DEFAULT_FILTERS } from "../lib/jobFilters";
 
@@ -114,9 +115,9 @@ export default function QuestionnairePage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-white flex flex-col items-center justify-center px-4 py-12">
-      <a href="/" className="mb-8 text-2xl font-bold text-indigo-600 tracking-tight">
+      <Link href="/" className="mb-8 text-2xl font-bold text-indigo-600 tracking-tight">
         JobRocket
-      </a>
+      </Link>
 
       {/* Progress */}
       <div className="w-full max-w-lg mb-8">

@@ -683,10 +683,10 @@ export default function ScoringPage() {
                     <h3 className="font-semibold text-gray-900 mb-4">Score Distribution</h3>
                     <div className="space-y-3">
                       {[
-                        { label: "Strong  80–100", min: 80, max: 100, color: "#10b981" },
-                        { label: "Good    65–79",  min: 65, max: 79,  color: "#3b82f6" },
-                        { label: "Fair    50–64",  min: 50, max: 64,  color: "#f59e0b" },
-                        { label: "Weak     0–49",  min: 0,  max: 49,  color: "#ef4444" },
+                        { label: "Strong 80–100", min: 80, max: 100, color: "#10b981" },
+                        { label: "Good   65–79",  min: 65, max: 79,  color: "#3b82f6" },
+                        { label: "Fair   50–64",  min: 50, max: 64,  color: "#f59e0b" },
+                        { label: "Weak    0–49",  min: 0,  max: 49,  color: "#ef4444" },
                       ].map(({ label, min, max, color }) => {
                         const count = scoredJobs.filter(
                           (j) => (j.score ?? 0) >= min && (j.score ?? 0) <= max

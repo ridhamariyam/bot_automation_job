@@ -3,8 +3,8 @@
  * - Skips any job whose match score is below 50 (returns null)
  * - Occasionally generates off-target titles to demonstrate smart filtering
  */
-import { generateApplication, detectRole } from "./generateApplication";
-import { PLATFORMS } from "../questionnaire/page";
+import { generateApplication } from "./generateApplication";
+import { platformLabel } from "./platforms";
 
 type JobPlatform = string;
 
@@ -40,10 +40,6 @@ function pickLocation(locations: string[], workModes: string[], seed: number): s
   if (hasHybrid && seed % 3 === 1) return locations[seed % Math.max(locations.length, 1)] + " (Hybrid)";
   if (hasOnsite || locations.length) return locations[seed % Math.max(locations.length, 1)] || "Bangalore";
   return "Remote";
-}
-
-function platformLabel(id: string): string {
-  return PLATFORMS.find((p) => p.id === id)?.label ?? id;
 }
 
 // Off-target titles used to demonstrate smart skip (<50% match filter)
