@@ -100,6 +100,50 @@ async def create_profile(
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# ── CV extract (parse only, no DB write) ──────────────────────────────────────
+@router.post("/cv-extract")
+async def cv_extract(
+    cv:    UploadFile = File(...),
+    email: str        = Form(""),
+    name:  str        = Form(""),
+):
+    """Parse a CV and return extracted fields for onboarding auto-fill."""
+    try:
+        file_bytes = await cv.read()
+        data = parse_cv(file_bytes, cv.content_type or "application/pdf")
+        return {
+            "skills":    ", ".join(data.get("detected_skills", [])),
+            "phone":     data.get("detected_phone") or "",
+            "titles":    "",
+            "locations": "",
+        }
+    except Exception as e:
+        logger.warning("cv-extract failed: %s", e)
+        return {"skills": "", "phone": "", "titles": "", "locations": ""}
+
+
+# ── Save onboarding preferences ────────────────────────────────────────────────
+class PreferencesIn(BaseModel):
+    email:     str
+    platforms: list[str] = []
+    filters:   dict      = {}
+
+
+@router.post("/preferences")
+def save_preferences(body: PreferencesIn):
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == body.email).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+        f = body.filters
+        user.active_platforms = ",".join(body.platforms)
+        user.job_types        = ",".join(f.get("jobTypes", []))
+        user.work_modes       = ",".join(f.get("workModes", []))
+        user.experience_level = f.get("experienceLevel", "")
+        db.commit()
+    return {"message": "Preferences saved"}
+
+
 # ── Fetch profile ──────────────────────────────────────────────────────────────
 @router.get("/{email}")
 def get_profile(email: str):

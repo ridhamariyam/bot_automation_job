@@ -125,6 +125,12 @@ class User(Base):
     salary           = Column(Integer, nullable=True)
     notice_period    = Column(Integer, nullable=True)
 
+    # Job preferences (set during onboarding)
+    active_platforms = Column(Text, nullable=True)   # comma-separated
+    job_types        = Column(Text, nullable=True)   # comma-separated
+    work_modes       = Column(Text, nullable=True)   # comma-separated
+    experience_level = Column(String, nullable=True)
+
     # ── Legacy flat credential columns (kept for backward compat) ──────────────
     # New code reads/writes PlatformCredential rows instead.
     # These remain so old sessions don't break on redeploy.

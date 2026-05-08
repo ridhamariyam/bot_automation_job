@@ -223,6 +223,11 @@ def _migrate_existing_schema():
         ("job_applications", "score_breakdown", "ALTER TABLE job_applications ADD COLUMN score_breakdown TEXT"),
         ("job_applications", "outcome",         "ALTER TABLE job_applications ADD COLUMN outcome VARCHAR"),
         ("job_applications", "outcome_at",      "ALTER TABLE job_applications ADD COLUMN outcome_at TIMESTAMP"),
+        # v4: job preferences columns
+        ("users", "active_platforms", "ALTER TABLE users ADD COLUMN active_platforms TEXT"),
+        ("users", "job_types",        "ALTER TABLE users ADD COLUMN job_types TEXT"),
+        ("users", "work_modes",       "ALTER TABLE users ADD COLUMN work_modes TEXT"),
+        ("users", "experience_level", "ALTER TABLE users ADD COLUMN experience_level VARCHAR"),
     ]
 
     with engine.begin() as conn:
