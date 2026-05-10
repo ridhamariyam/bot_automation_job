@@ -1014,13 +1014,28 @@ async def admin_sessions(x_admin_key: Optional[str] = Header(None)):
 
 
 # ── Cookie import ──────────────────────────────────────────────────────────────
+
+# Primary session cookie that must be present for each platform.
+# This replaces Playwright-based validation which fails from cloud datacenter IPs
+# because LinkedIn/Indeed block server IPs at the network level.
+_REQUIRED_AUTH_COOKIES: dict[str, set[str]] = {
+    "linkedin": {"li_at"},
+    "indeed":   {"ctk", "ind_guid", "indeed_co"},
+}
+
+
 @router.post("/session/{platform}/import")
 async def import_session_cookies(platform: str, body: SessionCookieImportIn):
     """
     Accept browser cookies exported by the user (e.g. via Cookie-Editor extension)
     and save them as a platform session.  Works even when Render's IP is blocked
     by CAPTCHA, because we're using the user's own authenticated browser cookies.
+
+    Validation is lightweight (required cookie name check) — no Playwright navigation
+    is used because LinkedIn/Indeed block cloud datacenter IPs.
     """
+    import time as _time
+
     platform = _normalize_session_platform(platform)
 
     with SessionLocal() as db:
@@ -1064,6 +1079,8 @@ async def import_session_cookies(platform: str, body: SessionCookieImportIn):
             "secure":   bool(c.get("secure") or c.get("Secure") or c.get("isSecure")),
             "httpOnly": bool(c.get("httpOnly") or c.get("HttpOnly") or c.get("isHttpOnly")),
             "sameSite": same_site,
+            # Keep expiry for stale-cookie check below
+            "_expires": c.get("expirationDate") or c.get("expires") or 0,
         })
 
     if not normalized:
@@ -1072,26 +1089,39 @@ async def import_session_cookies(platform: str, body: SessionCookieImportIn):
             "No valid cookie objects found. Make sure you copied the cookies correctly."
         )
 
-    playwright: Optional[Playwright] = None
-    browser:    Optional[Browser]    = None
-    context:    Optional[BrowserContext] = None
-    try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True, args=CHROMIUM_ARGS)
-        storage_state: dict = {"cookies": normalized, "origins": []}
-        context = await _new_capture_context(browser, storage_state=storage_state)
+    # Require the platform's primary session cookie
+    required_names = _REQUIRED_AUTH_COOKIES.get(platform, set())
+    auth_cookie = next(
+        (c for c in normalized if c["name"].lower() in required_names),
+        None,
+    )
+    if required_names and not auth_cookie:
+        cookie_hint = " / ".join(sorted(required_names))
+        raise HTTPException(
+            400,
+            f"Required session cookie not found ({cookie_hint}). "
+            f"Make sure you are logged in to {platform.title()} in your browser before exporting cookies.",
+        )
 
-        from bot.browser.session_manager import validate_authenticated_session, persist_storage_state
-        is_valid = await validate_authenticated_session(context, platform)
-        if not is_valid:
+    # Reject visibly expired auth cookie
+    if auth_cookie:
+        expires = auth_cookie.get("_expires", 0)
+        if expires and isinstance(expires, (int, float)) and expires > 0 and expires < _time.time():
             raise HTTPException(
                 400,
-                f"These cookies don't appear to be a valid {platform.title()} session. "
-                f"Make sure you are logged in to {platform.title()} before copying cookies, "
-                f"then try again."
+                f"Your {platform.title()} session has expired (cookie expiry: {expires}). "
+                f"Please log in to {platform.title()} again in your browser, then export fresh cookies.",
             )
 
-        full_state = await context.storage_state()
+    # Strip the internal _expires field before storing
+    for c in normalized:
+        c.pop("_expires", None)
+
+    # Build storage state — no Playwright navigation (cloud IPs are blocked by LinkedIn/Indeed)
+    full_state: dict = {"cookies": normalized, "origins": []}
+
+    try:
+        from bot.browser.session_manager import persist_storage_state
         if not persist_storage_state(body.user_email, platform, full_state):
             raise HTTPException(500, "Could not save session to database")
 
@@ -1102,14 +1132,7 @@ async def import_session_cookies(platform: str, body: SessionCookieImportIn):
         raise
     except Exception as e:
         logger.error("Cookie import failed %s/%s: %s", body.user_email, platform, e)
-        raise HTTPException(500, f"Session validation failed: {e}")
-    finally:
-        for obj, method in [(context, "close"), (browser, "close"), (playwright, "stop")]:
-            if obj:
-                try:
-                    await getattr(obj, method)()
-                except Exception:
-                    pass
+        raise HTTPException(500, f"Session import failed: {e}")
 
 
 # ── Verify credentials ─────────────────────────────────────────────────────────

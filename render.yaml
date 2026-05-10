@@ -25,10 +25,12 @@ services:
           property: internalConnectionString
 
       # ── Auth ────────────────────────────────────────────────────────────────
+      # IMPORTANT: set these ONCE in the Render dashboard and never change them.
+      # generateValue would regenerate on every deploy, invalidating all tokens + sessions.
       - key: JWT_SECRET
-        generateValue: true
+        sync: false
       - key: ENCRYPTION_KEY
-        generateValue: true
+        sync: false
 
       # ── SMTP (Gmail app password) ───────────────────────────────────────────
       - key: SMTP_HOST
