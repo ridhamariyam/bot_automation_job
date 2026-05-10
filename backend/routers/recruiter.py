@@ -11,7 +11,8 @@ import asyncio
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from middleware.auth import require_self, require_auth
 from pydantic import BaseModel
 
 from database import SessionLocal, User, RecruiterContact
@@ -36,7 +37,7 @@ class ScanFeedIn(BaseModel):
 
 # ── List contacts ──────────────────────────────────────────────────────────────
 @router.get("/{email}")
-def list_contacts(email: str, status: str | None = None):
+def list_contacts(email: str, status: str | None = None, _: str = Depends(require_self)):
     """Return all recruiter contacts for a user, optionally filtered by status."""
     with SessionLocal() as db:
         q = db.query(RecruiterContact).filter(RecruiterContact.user_email == email)
@@ -47,7 +48,7 @@ def list_contacts(email: str, status: str | None = None):
 
 
 @router.get("/{email}/pending")
-def pending_calls(email: str):
+def pending_calls(email: str, _: str = Depends(require_self)):
     """Contacts waiting for manual phone call — shown in 'Call Recruiter' UI."""
     with SessionLocal() as db:
         contacts = (
@@ -81,11 +82,13 @@ def update_contact_status(contact_id: str, body: StatusUpdate):
 
 # ── Manual WhatsApp send ───────────────────────────────────────────────────────
 @router.post("/send-whatsapp")
-async def send_whatsapp_to_contact(body: WhatsAppSendIn):
+async def send_whatsapp_to_contact(body: WhatsAppSendIn, token_email: str = Depends(require_auth)):
     """
     Manually trigger a WhatsApp message to a recruiter contact.
     Used when the user clicks 'Send WhatsApp' in the Call Recruiter UI.
     """
+    if body.user_email.lower() != token_email.lower():
+        raise HTTPException(403, "Access denied")
     with SessionLocal() as db:
         contact = db.get(RecruiterContact, body.contact_id)
         if not contact:
@@ -127,12 +130,14 @@ async def send_whatsapp_to_contact(body: WhatsAppSendIn):
 
 # ── LinkedIn feed scan ─────────────────────────────────────────────────────────
 @router.post("/scan-feed")
-async def scan_linkedin_feed(body: ScanFeedIn):
+async def scan_linkedin_feed(body: ScanFeedIn, token_email: str = Depends(require_auth)):
     """
     Scan the user's LinkedIn feed for hiring posts.
     Extracts contacts and runs the recruiter workflow for each found post.
     Requires the user to have verified LinkedIn credentials.
     """
+    if body.user_email.lower() != token_email.lower():
+        raise HTTPException(403, "Access denied")
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == body.user_email).first()
         if not user:
@@ -247,7 +252,7 @@ async def _run_feed_scan(
 
 # ── Stats ──────────────────────────────────────────────────────────────────────
 @router.get("/{email}/stats")
-def recruiter_stats(email: str):
+def recruiter_stats(email: str, _: str = Depends(require_self)):
     with SessionLocal() as db:
         all_contacts = db.query(RecruiterContact).filter(
             RecruiterContact.user_email == email

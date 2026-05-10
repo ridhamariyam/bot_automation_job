@@ -8,11 +8,12 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from database import SessionLocal, User, PlatformCredential, PlatformSession
+from middleware.auth import require_auth, require_self
 from services.crypto import encrypt_password
 from utils.cv_parser import parse_cv
 
@@ -43,7 +44,11 @@ async def create_profile(
     salary:          str        = Form(""),
     noticePeriod:    str        = Form(""),
     cv:              UploadFile = File(None),
+    token_email:     str        = Depends(require_auth),
 ):
+    if email.lower() != token_email.lower():
+        raise HTTPException(403, "Access denied")
+
     try:
         cv_path = ""
         cv_data: dict = {}
@@ -130,7 +135,9 @@ class PreferencesIn(BaseModel):
 
 
 @router.post("/preferences")
-def save_preferences(body: PreferencesIn):
+def save_preferences(body: PreferencesIn, token_email: str = Depends(require_auth)):
+    if body.email.lower() != token_email.lower():
+        raise HTTPException(403, "Access denied")
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == body.email).first()
         if not user:
@@ -146,7 +153,7 @@ def save_preferences(body: PreferencesIn):
 
 # ── Fetch profile ──────────────────────────────────────────────────────────────
 @router.get("/{email}")
-def get_profile(email: str):
+def get_profile(email: str, _: str = Depends(require_self)):
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == email).first()
         if not user:
@@ -182,7 +189,7 @@ class CredentialsIn(BaseModel):
 
 
 @router.patch("/{email}/credentials")
-def update_credentials(email: str, body: CredentialsIn):
+def update_credentials(email: str, body: CredentialsIn, _: str = Depends(require_self)):
     """
     Save platform credentials.
     Stores in PlatformCredential (encrypted) AND in legacy flat columns (for bot compat).

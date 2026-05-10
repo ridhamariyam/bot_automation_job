@@ -174,6 +174,6 @@ def reset_password(body: ResetIn):
         if not user:
             raise HTTPException(400, "No account found. Please register first.")
         user.hashed_pw = pwd_context.hash(body.password)
-        db.delete(record)
+        db.query(ResetToken).filter(ResetToken.email == record.email).delete()
         db.commit()
     return {"message": "Password updated successfully"}

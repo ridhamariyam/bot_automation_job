@@ -16,7 +16,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from middleware.auth import require_self, require_auth
 from pydantic import BaseModel, Field
 
 from database import SessionLocal, ScoringConfig, JobApplication, User
@@ -85,11 +86,13 @@ class OutcomeIn(BaseModel):
 # ── POST /score ────────────────────────────────────────────────────────────────
 
 @router.post("/score", response_model=ScoreJobOut)
-async def score_one_job(body: ScoreJobIn):
+async def score_one_job(body: ScoreJobIn, token_email: str = Depends(require_auth)):
     """
     Score a single job against the user's profile.
     Returns the full breakdown plus a should_apply decision.
     """
+    if body.user_email.lower() != token_email.lower():
+        raise HTTPException(403, "Access denied")
     user, cfg = _load_user_and_config(body.user_email)
 
     result: ScoreResult = await score_job(
@@ -136,11 +139,13 @@ async def score_one_job(body: ScoreJobIn):
 # ── POST /score/batch ──────────────────────────────────────────────────────────
 
 @router.post("/score/batch")
-async def score_jobs_batch(body: BatchScoreIn):
+async def score_jobs_batch(body: BatchScoreIn, token_email: str = Depends(require_auth)):
     """
     Score up to 50 jobs at once. Useful for pre-filtering before the bot runs.
     Returns each job with its score and should_apply flag.
     """
+    if body.user_email.lower() != token_email.lower():
+        raise HTTPException(403, "Access denied")
     if len(body.jobs) > 50:
         raise HTTPException(400, "Maximum 50 jobs per batch request.")
 
@@ -191,7 +196,7 @@ async def score_jobs_batch(body: BatchScoreIn):
 # ── GET /config/{email} ────────────────────────────────────────────────────────
 
 @router.get("/config/{email}")
-def get_config(email: str):
+def get_config(email: str, _: str = Depends(require_self)):
     """Return the user's current scoring configuration."""
     _, cfg = _load_user_and_config(email)
     return _fmt_config(cfg)
@@ -200,7 +205,7 @@ def get_config(email: str):
 # ── PATCH /config/{email} ──────────────────────────────────────────────────────
 
 @router.patch("/config/{email}")
-def update_config(email: str, body: UpdateConfigIn):
+def update_config(email: str, body: UpdateConfigIn, _: str = Depends(require_self)):
     """Update scoring mode, per-platform limits, or manual threshold."""
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == email).first()
@@ -229,10 +234,18 @@ def update_config(email: str, body: UpdateConfigIn):
         return _fmt_config(cfg)
 
 
+# ── POST /config/{email} ── (same as PATCH; used by the frontend Save button) ──
+
+@router.post("/config/{email}")
+def save_config(email: str, body: UpdateConfigIn, _: str = Depends(require_self)):
+    """Frontend Save button sends POST — delegate to same logic as PATCH."""
+    return update_config(email, body, _)
+
+
 # ── GET /stats/{email} ─────────────────────────────────────────────────────────
 
 @router.get("/stats/{email}")
-def get_adaptive_stats(email: str):
+def get_adaptive_stats(email: str, _: str = Depends(require_self)):
     """
     Return 30-day application success stats and the adaptive threshold recommendation.
     Also persists the new threshold adjustment to DB.
@@ -268,7 +281,7 @@ def get_adaptive_stats(email: str):
 # ── POST /outcome/{job_id} ─────────────────────────────────────────────────────
 
 @router.post("/outcome/{job_id}")
-def record_outcome(job_id: str, body: OutcomeIn):
+def record_outcome(job_id: str, body: OutcomeIn, token_email: str = Depends(require_auth)):
     """
     Record the outcome of an application (reply / interview / offer / rejected).
     Used by the adaptive engine to compute success rate.
@@ -278,6 +291,8 @@ def record_outcome(job_id: str, body: OutcomeIn):
         job = db.get(JobApplication, job_id)
         if not job:
             raise HTTPException(404, "Application not found")
+        if job.user_email.lower() != token_email.lower():
+            raise HTTPException(403, "Access denied")
 
         job.outcome    = body.outcome
         job.outcome_at = datetime.utcnow()
@@ -309,7 +324,7 @@ def record_outcome(job_id: str, body: OutcomeIn):
 # ── GET /suggestions/{email} ──────────────────────────────────────────────────
 
 @router.get("/suggestions/{email}")
-def get_suggestions(email: str):
+def get_suggestions(email: str, _: str = Depends(require_self)):
     """
     Compute actionable suggestions from the user's application history.
     Analyzes skill gaps, platform performance, and score quality.
@@ -456,7 +471,7 @@ def get_suggestions(email: str):
 # ── GET /outcome-intelligence/{email} ─────────────────────────────────────────
 
 @router.get("/outcome-intelligence/{email}")
-def get_outcome_intelligence(email: str):
+def get_outcome_intelligence(email: str, _: str = Depends(require_self)):
     """
     Compute outcome intelligence from up to 500 historical applications:
     - Pattern analysis: reply rate by score range, platform, and role
@@ -862,6 +877,15 @@ def _fmt_config(cfg: ScoringConfig) -> dict:
             adaptive_enabled=cfg.adaptive_enabled,
             threshold_adjustment=cfg.threshold_adjustment,
         ).effective_threshold,
+        # Flat fields for frontend (scoring page reads these directly)
+        "linkedin_daily":    cfg.linkedin_daily,
+        "indeed_daily":      cfg.indeed_daily,
+        "glassdoor_daily":   cfg.glassdoor_daily,
+        "monster_daily":     cfg.monster_daily,
+        "google_jobs_daily": cfg.google_jobs_daily,
+        "naukri_daily":      cfg.naukri_daily,
+        "bayt_daily":        cfg.bayt_daily,
+        "timesjobs_daily":   cfg.timesjobs_daily,
         "platform_limits": {
             "linkedin":    cfg.linkedin_daily,
             "indeed":      cfg.indeed_daily,
