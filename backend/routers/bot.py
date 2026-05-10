@@ -8,24 +8,31 @@ v2 changes:
 - Credentials read from PlatformCredential (encrypted) or legacy flat columns
 """
 import asyncio
+import json
 import logging
 import os
 import re
 import signal
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 from pydantic import BaseModel
 from sqlalchemy import func
 
 from database import SessionLocal, User, BotLog, JobApplication, PlatformCredential, PLAN_FEATURES
 from services.crypto import encrypt_password
+from services.telemetry import (
+    auth_session_started, auth_session_expired, auth_session_cancelled,
+    auth_login_attempt, auth_captcha_detected, auth_login_failed,
+    auth_authenticated, auth_cookie_import, session_persisted,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -77,10 +84,18 @@ class BrowserLoginSession:
     created_at: datetime
     expires_at: datetime
     timeout_task: Optional[asyncio.Task] = None
+    auto_login_task: Optional[asyncio.Task] = None
+    login_status: str = "waiting"   # waiting|logging_in|success|captcha|failed
+    login_error: str = ""
+    event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
 
 
 _browser_sessions: dict[str, BrowserLoginSession] = {}
 _browser_sessions_lock = asyncio.Lock()
+
+
+def _emit(session: BrowserLoginSession, event_type: str, **kwargs) -> None:
+    session.event_queue.put_nowait({"type": event_type, "ts": time.time(), **kwargs})
 
 
 class BrowserSessionInProgressError(Exception):
@@ -101,6 +116,8 @@ class VerifyIn(BaseModel):
 
 class BrowserSessionStartIn(BaseModel):
     user_email: str
+    email: Optional[str] = None      # for auto-login
+    password: Optional[str] = None   # for auto-login
 
 class BrowserSessionStatusIn(BaseModel):
     session_id: str
@@ -111,6 +128,10 @@ class BrowserSessionCompleteIn(BaseModel):
 
 class BrowserSessionCancelIn(BaseModel):
     session_id: str
+
+class SessionCookieImportIn(BaseModel):
+    user_email: str
+    cookies_json: str
 
 class LogIn(BaseModel):
     user_email: str
@@ -130,6 +151,8 @@ async def _close_browser_session(session: BrowserLoginSession) -> None:
     current_task = asyncio.current_task()
     if session.timeout_task and session.timeout_task is not current_task:
         session.timeout_task.cancel()
+    if session.auto_login_task and not session.auto_login_task.done():
+        session.auto_login_task.cancel()
 
     try:
         if not session.page.is_closed():
@@ -163,6 +186,8 @@ async def _expire_browser_session(session_id: str) -> None:
 
     expired = await _pop_browser_session(session_id)
     if expired:
+        auth_session_expired(expired.user_email, expired.platform, session_id)
+        _emit(expired, "session_expired")
         await _close_browser_session(expired)
 
 
@@ -289,6 +314,202 @@ async def _validate_saved_platform_session(user_email: str, platform: str) -> Op
                 await playwright.stop()
             except Exception:
                 pass
+
+
+async def _auto_login_browser(session: BrowserLoginSession, email: str, password: str) -> None:
+    """Fill credentials into the server headless browser already open at the login page."""
+    platform = session.platform
+    auth_login_attempt(session.user_email, platform, session.session_id)
+    try:
+        page = _session_current_page(session)
+        if not page:
+            session.login_status = "failed"
+            session.login_error = "Browser page not available — please start again."
+            _emit(session, "failed", message=session.login_error)
+            auth_login_failed(session.user_email, platform, session.session_id, reason="no_page")
+            return
+
+        _CAPTCHA_MSG = (
+            "This server's IP triggered a security check. "
+            "Switch to Cookie Import — log in on your own browser, export cookies with Cookie-Editor, and paste them."
+        )
+
+        if platform == "linkedin":
+            try:
+                await page.wait_for_selector("#username", timeout=12000)
+            except Exception:
+                session.login_status = "failed"
+                session.login_error = "LinkedIn login page did not load. Please try again."
+                _emit(session, "failed", message=session.login_error)
+                auth_login_failed(session.user_email, platform, session.session_id, reason="page_load_timeout")
+                return
+
+            _emit(session, "typing_email")
+            await page.fill("#username", email)
+            await asyncio.sleep(0.9)
+            _emit(session, "typing_password")
+            await page.fill("#password", password)
+            await asyncio.sleep(0.9)
+            _emit(session, "submitting")
+            await page.click("button[type='submit']")
+            _emit(session, "waiting_redirect")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=25000)
+            except Exception:
+                pass
+
+            url = page.url
+            _LI_CAPTCHA = ("checkpoint", "challenge", "pin", "verify", "security-verification", "uas/login")
+            _LI_SUCCESS  = ("/feed", "/mynetwork", "/jobs", "/messaging", "/notifications")
+
+            if any(k in url for k in _LI_SUCCESS) or url.rstrip("/").endswith("/in"):
+                session.login_status = "success"
+                _emit(session, "authenticated")
+                auth_authenticated(session.user_email, platform, session.session_id)
+                try:
+                    storage_state = await session.context.storage_state()
+                    from bot.browser.session_manager import persist_storage_state
+                    persist_storage_state(session.user_email, platform, storage_state)
+                    session_persisted(session.user_email, platform)
+                    logger.info("Auto-login: LinkedIn session saved for %s", session.user_email)
+                except Exception as e:
+                    logger.warning("Auto-login: session save failed: %s", e)
+            elif any(k in url for k in _LI_CAPTCHA):
+                session.login_status = "captcha"
+                session.login_error = _CAPTCHA_MSG
+                _emit(session, "captcha_detected", message=_CAPTCHA_MSG)
+                auth_captcha_detected(session.user_email, platform, session.session_id)
+            elif "login" in url or "signup" in url:
+                session.login_status = "failed"
+                session.login_error = "Login failed — please check your email and password."
+                _emit(session, "failed", message=session.login_error)
+                auth_login_failed(session.user_email, platform, session.session_id, reason="bad_credentials")
+            else:
+                # Unknown redirect — use selector-based auth check as final arbiter
+                try:
+                    from bot.browser.session_manager import is_authenticated_page
+                    if await is_authenticated_page(page, platform):
+                        session.login_status = "success"
+                        _emit(session, "authenticated")
+                        auth_authenticated(session.user_email, platform, session.session_id)
+                        storage_state = await session.context.storage_state()
+                        from bot.browser.session_manager import persist_storage_state
+                        persist_storage_state(session.user_email, platform, storage_state)
+                        session_persisted(session.user_email, platform)
+                    else:
+                        session.login_status = "captcha"
+                        session.login_error = _CAPTCHA_MSG
+                        _emit(session, "captcha_detected", message=_CAPTCHA_MSG)
+                        auth_captcha_detected(session.user_email, platform, session.session_id)
+                except Exception:
+                    session.login_status = "failed"
+                    session.login_error = "Login failed — please check your credentials."
+                    _emit(session, "failed", message=session.login_error)
+                    auth_login_failed(session.user_email, platform, session.session_id, reason="selector_check_failed")
+
+        elif platform == "indeed":
+            email_sel = "input[name='__email'], input[type='email']"
+            try:
+                await page.wait_for_selector(email_sel, timeout=12000)
+            except Exception:
+                session.login_status = "failed"
+                session.login_error = "Indeed login page did not load. Please try again."
+                _emit(session, "failed", message=session.login_error)
+                auth_login_failed(session.user_email, platform, session.session_id, reason="page_load_timeout")
+                return
+
+            _emit(session, "typing_email")
+            await page.fill(email_sel, email)
+            await asyncio.sleep(0.7)
+
+            for btn_sel in ["button[type='submit']", "button:has-text('Continue')"]:
+                try:
+                    btn = page.locator(btn_sel).first
+                    if await btn.count():
+                        await btn.click()
+                        break
+                except Exception:
+                    pass
+            await asyncio.sleep(3.0)
+
+            pw_sel = "input[type='password']"
+            try:
+                await page.wait_for_selector(pw_sel, timeout=8000)
+                _emit(session, "typing_password")
+                await page.fill(pw_sel, password)
+                await asyncio.sleep(0.7)
+                _emit(session, "submitting")
+                for btn_sel in ["button[type='submit']", "button:has-text('Sign in')"]:
+                    try:
+                        btn = page.locator(btn_sel).first
+                        if await btn.count():
+                            await btn.click()
+                            break
+                    except Exception:
+                        pass
+                _emit(session, "waiting_redirect")
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            url = page.url
+            _ID_CAPTCHA = ("challenge", "verify", "2fa", "captcha")
+
+            if any(k in url for k in _ID_CAPTCHA):
+                session.login_status = "captcha"
+                session.login_error = _CAPTCHA_MSG
+                _emit(session, "captcha_detected", message=_CAPTCHA_MSG)
+                auth_captcha_detected(session.user_email, platform, session.session_id)
+            else:
+                try:
+                    from bot.browser.session_manager import is_authenticated_page
+                    await asyncio.sleep(1.5)
+                    url_final = page.url
+                    if any(k in url_final for k in _ID_CAPTCHA):
+                        session.login_status = "captcha"
+                        session.login_error = _CAPTCHA_MSG
+                        _emit(session, "captcha_detected", message=_CAPTCHA_MSG)
+                        auth_captcha_detected(session.user_email, platform, session.session_id)
+                    elif await is_authenticated_page(page, platform):
+                        session.login_status = "success"
+                        _emit(session, "authenticated")
+                        auth_authenticated(session.user_email, platform, session.session_id)
+                        try:
+                            storage_state = await session.context.storage_state()
+                            from bot.browser.session_manager import persist_storage_state
+                            persist_storage_state(session.user_email, platform, storage_state)
+                            session_persisted(session.user_email, platform)
+                            logger.info("Auto-login: Indeed session saved for %s", session.user_email)
+                        except Exception as e:
+                            logger.warning("Auto-login: session save failed: %s", e)
+                    elif "auth" in url_final or "login" in url_final or "account" in url_final:
+                        session.login_status = "failed"
+                        session.login_error = "Login failed — please check your email and password."
+                        _emit(session, "failed", message=session.login_error)
+                        auth_login_failed(session.user_email, platform, session.session_id, reason="bad_credentials")
+                    else:
+                        session.login_status = "captcha"
+                        session.login_error = _CAPTCHA_MSG
+                        _emit(session, "captcha_detected", message=_CAPTCHA_MSG)
+                        auth_captcha_detected(session.user_email, platform, session.session_id)
+                except Exception:
+                    session.login_status = "failed"
+                    session.login_error = "Login failed — please check your email and password."
+                    _emit(session, "failed", message=session.login_error)
+                    auth_login_failed(session.user_email, platform, session.session_id, reason="auth_check_failed")
+
+    except asyncio.CancelledError:
+        logger.info("Auto-login task cancelled for session %s", session.session_id)
+    except Exception as e:
+        logger.warning("Auto-login error for session %s: %s", session.session_id, e)
+        if session.login_status == "logging_in":
+            session.login_status = "failed"
+            session.login_error = "Connection error — please try again."
+            _emit(session, "failed", message=session.login_error)
+            auth_login_failed(session.user_email, platform, session.session_id, reason="unexpected_error")
 
 
 async def _launch_browser_login_session(platform: str, user_email: str) -> BrowserLoginSession:
@@ -610,6 +831,17 @@ async def start_browser_session(platform: str, body: BrowserSessionStartIn):
         session = await _launch_browser_login_session(platform, body.user_email)
     except BrowserSessionInProgressError:
         return JSONResponse(status_code=409, content={"error": "Session already in progress"})
+
+    auth_session_started(body.user_email, platform, session.session_id)
+
+    # If credentials provided, kick off auto-login in the server browser
+    if body.email and body.password:
+        session.login_status = "logging_in"
+        session.auto_login_task = asyncio.create_task(
+            _auto_login_browser(session, body.email, body.password)
+        )
+        return {"session_id": session.session_id, "status": "logging_in"}
+
     return {"session_id": session.session_id, "status": "waiting_for_login"}
 
 
@@ -620,10 +852,21 @@ async def browser_session_status(platform: str, body: BrowserSessionStatusIn):
 
     session = await _get_browser_session(body.session_id)
     if not session or session.platform != platform:
-        return {"ready": False, "message": "Session expired"}
+        return {"ready": False, "message": "Session expired or not found", "login_status": "expired"}
 
+    # Auto-login status takes priority
+    if session.login_status == "success":
+        return {"ready": True, "message": "Logged in successfully", "login_status": "success"}
+    if session.login_status == "logging_in":
+        return {"ready": False, "message": "Logging in…", "login_status": "logging_in"}
+    if session.login_status == "captcha":
+        return {"ready": False, "message": session.login_error, "login_status": "captcha"}
+    if session.login_status == "failed":
+        return {"ready": False, "message": session.login_error, "login_status": "failed"}
+
+    # Legacy: user logged in via external browser
     ready, message = await _browser_session_ready(session)
-    return {"ready": ready, "message": message}
+    return {"ready": ready, "message": message, "login_status": session.login_status}
 
 
 @router.post("/session/{platform}/complete")
@@ -635,6 +878,26 @@ async def complete_browser_session(platform: str, body: BrowserSessionCompleteIn
     if not session or session.platform != platform or session.user_email != body.user_email:
         raise HTTPException(404, "Session not found or expired")
 
+    # Auto-login already completed successfully — session already saved by _auto_login_browser
+    if session.login_status == "success":
+        popped = await _pop_browser_session(body.session_id)
+        if popped:
+            await _close_browser_session(popped)
+        return {"ok": True, "message": f"{platform.title()} connected successfully"}
+
+    # Auto-login hit CAPTCHA or failed
+    if session.login_status in ("captcha", "failed"):
+        error = session.login_error or "Login failed"
+        popped = await _pop_browser_session(body.session_id)
+        if popped:
+            await _close_browser_session(popped)
+        return {"ok": False, "message": error, "login_status": session.login_status}
+
+    # Auto-login still in progress — shouldn't normally reach here
+    if session.login_status == "logging_in":
+        return {"ok": False, "message": "Still logging in — please wait a moment and retry."}
+
+    # Legacy: user manually logged in via external browser, check server browser state
     ready, message = await _browser_session_ready(session)
     if not ready:
         return {"ok": False, "message": message}
@@ -679,8 +942,174 @@ async def cancel_browser_session(platform: str, body: BrowserSessionCancelIn):
     else:
         session = None
     if session:
+        auth_session_cancelled(session.user_email, platform, session.session_id)
         await _close_browser_session(session)
     return {"ok": True, "message": "Session cancelled"}
+
+
+# ── SSE login event stream ─────────────────────────────────────────────────────
+@router.get("/session/{platform}/{session_id}/stream")
+async def stream_login_events(platform: str, session_id: str, request: Request):
+    """
+    Server-Sent Events stream for real-time login progress.
+    EventSource connects with session_id in the URL (no custom header needed).
+    Events: connected | typing_email | typing_password | submitting | waiting_redirect
+            | captcha_detected | authenticated | failed | session_expired | keepalive
+    """
+    platform = _normalize_session_platform(platform)
+
+    async def event_generator():
+        yield f"data: {json.dumps({'type': 'connected', 'session_id': session_id})}\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            session = await _get_browser_session(session_id)
+            if not session or session.platform != platform:
+                yield f"data: {json.dumps({'type': 'session_expired'})}\n\n"
+                break
+            try:
+                event = await asyncio.wait_for(session.event_queue.get(), timeout=15.0)
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("type") in ("authenticated", "failed", "captcha_detected", "session_expired"):
+                    break
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── Admin ──────────────────────────────────────────────────────────────────────
+@router.get("/admin/sessions")
+async def admin_sessions(x_admin_key: Optional[str] = Header(None)):
+    """Active browser login sessions — requires X-Admin-Key header matching ADMIN_KEY env var."""
+    admin_key = os.getenv("ADMIN_KEY")
+    if not admin_key or x_admin_key != admin_key:
+        raise HTTPException(403, "Forbidden")
+    now = datetime.utcnow()
+    async with _browser_sessions_lock:
+        sessions_out = [
+            {
+                "session_id":          s.session_id,
+                "user_email":          s.user_email,
+                "platform":            s.platform,
+                "login_status":        s.login_status,
+                "created_at":          s.created_at.isoformat(),
+                "expires_at":          s.expires_at.isoformat(),
+                "age_seconds":         round((now - s.created_at).total_seconds()),
+                "auto_login_running":  (
+                    s.auto_login_task is not None and not s.auto_login_task.done()
+                ),
+            }
+            for s in _browser_sessions.values()
+        ]
+    return {"sessions": sessions_out, "count": len(sessions_out)}
+
+
+# ── Cookie import ──────────────────────────────────────────────────────────────
+@router.post("/session/{platform}/import")
+async def import_session_cookies(platform: str, body: SessionCookieImportIn):
+    """
+    Accept browser cookies exported by the user (e.g. via Cookie-Editor extension)
+    and save them as a platform session.  Works even when Render's IP is blocked
+    by CAPTCHA, because we're using the user's own authenticated browser cookies.
+    """
+    platform = _normalize_session_platform(platform)
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == body.user_email).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+    # Parse cookie JSON — support both array and dict formats
+    try:
+        raw = json.loads(body.cookies_json)
+        if isinstance(raw, dict):
+            raw = list(raw.values())
+        if not isinstance(raw, list):
+            raise ValueError("Expected a JSON array of cookie objects")
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"Invalid JSON: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # Normalise to Playwright cookie format
+    default_domain = ".linkedin.com" if platform == "linkedin" else ".indeed.com"
+    normalized: list[dict] = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or c.get("Name") or c.get("key") or ""
+        value = c.get("value") or c.get("Value") or ""
+        if not name:
+            continue
+        domain = c.get("domain") or c.get("Domain") or ""
+        if domain and not domain.startswith(".") and not domain.startswith("http"):
+            domain = f".{domain}"
+        same_site = c.get("sameSite") or c.get("SameSite") or "Lax"
+        if same_site not in ("Strict", "Lax", "None"):
+            same_site = "Lax"
+        normalized.append({
+            "name":     name,
+            "value":    value,
+            "domain":   domain or default_domain,
+            "path":     c.get("path") or c.get("Path") or "/",
+            "secure":   bool(c.get("secure") or c.get("Secure") or c.get("isSecure")),
+            "httpOnly": bool(c.get("httpOnly") or c.get("HttpOnly") or c.get("isHttpOnly")),
+            "sameSite": same_site,
+        })
+
+    if not normalized:
+        raise HTTPException(
+            400,
+            "No valid cookie objects found. Make sure you copied the cookies correctly."
+        )
+
+    playwright: Optional[Playwright] = None
+    browser:    Optional[Browser]    = None
+    context:    Optional[BrowserContext] = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True, args=CHROMIUM_ARGS)
+        storage_state: dict = {"cookies": normalized, "origins": []}
+        context = await _new_capture_context(browser, storage_state=storage_state)
+
+        from bot.browser.session_manager import validate_authenticated_session, persist_storage_state
+        is_valid = await validate_authenticated_session(context, platform)
+        if not is_valid:
+            raise HTTPException(
+                400,
+                f"These cookies don't appear to be a valid {platform.title()} session. "
+                f"Make sure you are logged in to {platform.title()} before copying cookies, "
+                f"then try again."
+            )
+
+        full_state = await context.storage_state()
+        if not persist_storage_state(body.user_email, platform, full_state):
+            raise HTTPException(500, "Could not save session to database")
+
+        auth_cookie_import(body.user_email, platform, ok=True)
+        return {"ok": True, "message": f"{platform.title()} session imported and activated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Cookie import failed %s/%s: %s", body.user_email, platform, e)
+        raise HTTPException(500, f"Session validation failed: {e}")
+    finally:
+        for obj, method in [(context, "close"), (browser, "close"), (playwright, "stop")]:
+            if obj:
+                try:
+                    await getattr(obj, method)()
+                except Exception:
+                    pass
 
 
 # ── Verify credentials ─────────────────────────────────────────────────────────

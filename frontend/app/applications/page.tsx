@@ -53,14 +53,19 @@ export default function ApplicationsPage() {
   }, [router]);
 
   async function updateStatus(jobId: string, status: string) {
+    const prev = jobs.find(j => j.id === jobId)?.status ?? "";
     setUpdatingStatus(jobId);
+    setJobs(p => p.map(j => j.id === jobId ? { ...j, status } : j));
+    if (selectedJob?.id === jobId) setSelectedJob(p => p ? { ...p, status } : null);
     try {
       await apiFetch(`/api/jobs/${jobId}/status`, {
         method: "PATCH",
         body: JSON.stringify({ status }),
       });
-      setJobs(prev => prev.map(j => j.id === jobId ? { ...j, status } : j));
-      if (selectedJob?.id === jobId) setSelectedJob(prev => prev ? { ...prev, status } : null);
+    } catch {
+      // Revert optimistic update on failure
+      setJobs(p => p.map(j => j.id === jobId ? { ...j, status: prev } : j));
+      if (selectedJob?.id === jobId) setSelectedJob(p => p ? { ...p, status: prev } : null);
     } finally {
       setUpdatingStatus(null);
     }

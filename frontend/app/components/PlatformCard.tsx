@@ -1,13 +1,9 @@
 "use client";
 
 import { useState } from "react";
-
-import { BrowserConnectModal } from "./BrowserConnectModal";
-
-const BROWSER_LOGIN_URLS: Record<string, string> = {
-  linkedin: "https://www.linkedin.com/login",
-  indeed: "https://secure.indeed.com/account/login",
-};
+import { BrowserConnectModal, type AutoLoginStatus } from "./BrowserConnectModal";
+import { loginEventToStatus, type LoginEvent } from "../lib/types";
+import { API } from "../lib/api";
 
 export type PlatformStatus =
   | "ready"
@@ -27,9 +23,12 @@ interface Props {
   connectedAtLabel?: string;
   onConnect?: (id: string, email: string, password: string) => Promise<void>;
   onRetryVerify?: (id: string, email: string, password: string) => Promise<void>;
-  onBrowserConnectStart?: (id: string) => Promise<string>;
+  // Browser session (auto-login path)
+  onBrowserConnectStart?: (id: string, email: string, password: string) => Promise<string>;
   onBrowserConnectComplete?: (id: string, sessionId: string) => Promise<void>;
   onBrowserConnectCancel?: (id: string, sessionId: string) => Promise<void>;
+  // Cookie import path
+  onCookieImport?: (id: string, cookiesJson: string) => Promise<void>;
 }
 
 function PlatformIcon({ id, abbr }: { id: string; abbr: string }) {
@@ -92,18 +91,20 @@ export function PlatformCard({
   onBrowserConnectStart,
   onBrowserConnectComplete,
   onBrowserConnectCancel,
+  onCookieImport,
 }: Props) {
-  const [showForm, setShowForm] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
+  const [showForm, setShowForm]   = useState(false);
+  const [loading, setLoading]     = useState(false);
+  const [err, setErr]             = useState("");
   const [credEmail, setCredEmail] = useState(initialEmail || "");
   const [credPassword, setCredPassword] = useState("");
-  const [browserModalOpen, setBrowserModalOpen] = useState(false);
-  const [browserSessionId, setBrowserSessionId] = useState("");
-  const [browserLoading, setBrowserLoading] = useState(false);
-  const [browserError, setBrowserError] = useState("");
-  const [browserStatusText, setBrowserStatusText] = useState("");
-  const [browserPrimaryLabel, setBrowserPrimaryLabel] = useState("Continue");
+
+  // Browser connect modal state
+  const [browserModalOpen, setBrowserModalOpen]     = useState(false);
+  const [browserSessionId, setBrowserSessionId]     = useState("");
+  const [autoLoginLoading, setAutoLoginLoading]     = useState(false);
+  const [autoLoginStatus, setAutoLoginStatus]       = useState<AutoLoginStatus>("idle");
+  const [autoLoginMessage, setAutoLoginMessage]     = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -117,9 +118,7 @@ export function PlatformCard({
     } catch (ex: unknown) {
       const msg = ex instanceof Error ? ex.message : "Connection failed";
       setErr(msg);
-      if (!msg.includes("saved")) {
-        setCredPassword("");
-      }
+      if (!msg.includes("saved")) setCredPassword("");
     } finally {
       setLoading(false);
     }
@@ -131,11 +130,8 @@ export function PlatformCard({
     setLoading(true);
     setErr("");
     try {
-      if (onRetryVerify) {
-        await onRetryVerify(id, credEmail, credPassword);
-      } else if (onConnect) {
-        await onConnect(id, credEmail, credPassword);
-      }
+      if (onRetryVerify) await onRetryVerify(id, credEmail, credPassword);
+      else if (onConnect) await onConnect(id, credEmail, credPassword);
       setShowForm(false);
       setCredPassword("");
     } catch (ex: unknown) {
@@ -145,73 +141,123 @@ export function PlatformCard({
     }
   }
 
-  async function handleBrowserStart() {
-    if (!onBrowserConnectStart) return;
-    setBrowserLoading(true);
-    setBrowserError("");
-    setBrowserStatusText("");
-    setBrowserPrimaryLabel("Continue");
+  function handleBrowserOpen() {
+    setAutoLoginStatus("idle");
+    setAutoLoginMessage("");
     setErr("");
+    setBrowserModalOpen(true);
+  }
+
+  async function handleAutoLogin(email: string, password: string) {
+    if (!onBrowserConnectStart) return;
+    setAutoLoginLoading(true);
+    setAutoLoginStatus("starting");
+    setAutoLoginMessage("");
+    let sessionId = "";
+    let es: EventSource | null = null;
+
     try {
-      const sessionId = await onBrowserConnectStart(id);
+      sessionId = await onBrowserConnectStart(id, email, password);
       setBrowserSessionId(sessionId);
-      setBrowserModalOpen(true);
+      setAutoLoginStatus("browser_opened");
+
+      // Open SSE stream — session_id in URL, no custom headers needed
+      const streamUrl = `${API}/api/bot/session/${id}/${sessionId}/stream`;
+      es = new EventSource(streamUrl);
+
+      await new Promise<void>((resolve, reject) => {
+        if (!es) { reject(new Error("EventSource not available")); return; }
+        let settled = false;
+
+        const settle = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(safetyTimer);
+          es?.close();
+          fn();
+        };
+
+        const safetyTimer = window.setTimeout(() => {
+          settle(() => reject(new Error("Login timed out — please try again.")));
+        }, 90000);
+
+        es.onmessage = (ev) => {
+          try {
+            const event: LoginEvent = JSON.parse(ev.data as string);
+            const newStatus = loginEventToStatus(event);
+            if (newStatus) setAutoLoginStatus(newStatus);
+            if (event.message) setAutoLoginMessage(event.message);
+
+            if (event.type === "authenticated") {
+              settle(() => resolve());
+            } else if (event.type === "failed" || event.type === "session_expired") {
+              settle(() => reject(
+                Object.assign(new Error(event.message || "Login failed"), { loginStatus: "failed" as const })
+              ));
+            } else if (event.type === "captcha_detected") {
+              settle(() => reject(
+                Object.assign(new Error(event.message || "CAPTCHA detected"), { loginStatus: "captcha" as const })
+              ));
+            }
+          } catch {
+            // ignore malformed SSE events
+          }
+        };
+
+        es.onerror = () => {
+          settle(() => reject(new Error("Connection error — please try again.")));
+        };
+      });
+
+      // SSE confirmed authenticated — call complete to free server-side browser resources
+      if (onBrowserConnectComplete) {
+        await onBrowserConnectComplete(id, sessionId);
+      }
+      setAutoLoginStatus("success");
+      setAutoLoginMessage("Logged in successfully!");
+      await new Promise(r => window.setTimeout(r, 1400));
+      resetBrowserState();
+      setBrowserModalOpen(false);
+
     } catch (ex: unknown) {
-      setErr(ex instanceof Error ? ex.message : "Could not open browser");
+      const err = ex as Error & { loginStatus?: string };
+      const ls = (err.loginStatus ?? "failed") as AutoLoginStatus;
+      setAutoLoginStatus(ls);
+      setAutoLoginMessage(err.message || "Login failed");
+      if (sessionId && onBrowserConnectCancel) {
+        onBrowserConnectCancel(id, sessionId).catch(() => {});
+        setBrowserSessionId("");
+      }
     } finally {
-      setBrowserLoading(false);
+      es?.close();
+      setAutoLoginLoading(false);
     }
   }
 
-  async function handleBrowserContinue() {
-    if (!browserSessionId || !onBrowserConnectComplete) return;
-    setBrowserLoading(true);
-    setBrowserError("");
-    setBrowserStatusText("Checking login...");
-    setBrowserPrimaryLabel("Continue");
-    try {
-      await onBrowserConnectComplete(id, browserSessionId);
-      setBrowserPrimaryLabel("Ready to use ✅");
-      setBrowserStatusText("Ready to use ✅");
-      setBrowserLoading(false);
-      await new Promise(resolve => window.setTimeout(resolve, 1200));
-      setBrowserModalOpen(false);
-      setBrowserSessionId("");
-      setCredPassword("");
-      setShowForm(false);
-      setBrowserStatusText("");
-      setBrowserPrimaryLabel("Continue");
-    } catch (ex: unknown) {
-      const message = ex instanceof Error ? ex.message : "Could not save session";
-      setBrowserError(message);
-      setBrowserStatusText("");
-      setBrowserPrimaryLabel(
-        message.toLowerCase().includes("still not detected") ||
-          message.toLowerCase().includes("not logged in yet")
-          ? "Retry"
-          : "Continue"
-      );
-      setBrowserLoading(false);
-    }
+  async function handleCookieImport(cookiesJson: string) {
+    if (!onCookieImport) throw new Error("Cookie import not configured");
+    await onCookieImport(id, cookiesJson);
+    resetBrowserState();
+    setBrowserModalOpen(false);
   }
 
   async function handleBrowserCancel() {
-    const sessionId = browserSessionId;
+    const sid = browserSessionId;
     setBrowserModalOpen(false);
-    setBrowserSessionId("");
-    setBrowserError("");
-    setBrowserStatusText("");
-    setBrowserPrimaryLabel("Continue");
-    if (sessionId && onBrowserConnectCancel) {
-      try {
-        await onBrowserConnectCancel(id, sessionId);
-      } catch {
-        // Best-effort cleanup only.
-      }
+    resetBrowserState();
+    if (sid && onBrowserConnectCancel) {
+      onBrowserConnectCancel(id, sid).catch(() => {});
     }
   }
 
-  const isReady = status === "ready";
+  function resetBrowserState() {
+    setBrowserSessionId("");
+    setAutoLoginStatus("idle");
+    setAutoLoginMessage("");
+    setAutoLoginLoading(false);
+  }
+
+  const isReady   = status === "ready";
   const isPending = status === "verify_pending";
   const isExpired = status === "session_expired";
   const canConnect = status === "idle" || status === "session_expired";
@@ -231,9 +277,7 @@ export function PlatformCard({
             : status === "coming_soon"
             ? "bg-[#F8F5F0] shadow-[0_1px_4px_rgba(0,0,0,0.05)]"
             : "bg-white shadow-[0_2px_8px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.04)]",
-        ]
-          .filter(Boolean)
-          .join(" ")}
+        ].filter(Boolean).join(" ")}
       >
         <div className="flex items-center gap-3 sm:gap-4">
           <div
@@ -248,28 +292,20 @@ export function PlatformCard({
           </div>
 
           <div className="flex-1 min-w-0">
-            <p
-              className={[
-                "text-[13px] sm:text-[14px] font-semibold tracking-tight leading-snug",
-                status === "coming_soon" ? "text-[#A89F97]" : "text-[#1A1714]",
-              ].join(" ")}
-            >
+            <p className={[
+              "text-[13px] sm:text-[14px] font-semibold tracking-tight leading-snug",
+              status === "coming_soon" ? "text-[#A89F97]" : "text-[#1A1714]",
+            ].join(" ")}>
               {name}
             </p>
             <p className="text-[11px] sm:text-[12px] text-[#A89F97] mt-0.5 truncate leading-relaxed">
               {tagline}
             </p>
             {connectedAtLabel && (
-              <p
-                className={[
-                  "mt-1 text-[11px] leading-relaxed",
-                  isExpired
-                    ? "text-amber-700"
-                    : isReady
-                    ? "text-emerald-700"
-                    : "text-[#A89F97]",
-                ].join(" ")}
-              >
+              <p className={[
+                "mt-1 text-[11px] leading-relaxed",
+                isExpired ? "text-amber-700" : isReady ? "text-emerald-700" : "text-[#A89F97]",
+              ].join(" ")}>
                 {connectedAtLabel}
               </p>
             )}
@@ -281,23 +317,18 @@ export function PlatformCard({
                 Soon
               </span>
             )}
-
             {isReady && (
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
-                <span className="text-[12px] sm:text-[13px] font-semibold text-emerald-700">
-                  Ready to use
-                </span>
+                <span className="text-[12px] sm:text-[13px] font-semibold text-emerald-700">Ready to use</span>
               </div>
             )}
-
             {isPending && (
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_6px_rgba(59,130,246,0.5)]" />
                 <span className="text-[12px] sm:text-[13px] font-semibold text-blue-700">Verify</span>
               </div>
             )}
-
             {isExpired && (
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <span className="w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]" />
@@ -312,7 +343,7 @@ export function PlatformCard({
             <div className="bg-blue-50 rounded-lg px-3 py-2.5 text-[12px] leading-relaxed">
               <p className="font-semibold text-blue-800 mb-1">Manual verification needed</p>
               <p className="text-blue-700 text-[11px] mb-3 leading-relaxed">
-                Your credentials are saved. Log in once on {name} in your browser, then retry to mark it ready to use.
+                Your credentials are saved. Log in once on {name} in your browser, then retry to mark it ready.
               </p>
               <button
                 type="button"
@@ -329,25 +360,20 @@ export function PlatformCard({
           <div className="mt-4 pt-4 border-t border-[#F0EBE4] space-y-3">
             {isExpired && (
               <div className="rounded-lg bg-amber-50 px-3 py-2.5 text-[12px] leading-relaxed text-amber-800 break-words overflow-hidden">
-                Your session expired.
-
-                Reconnect the platform to continue applying.
+                Your session expired. Reconnect the platform to continue applying.
               </div>
             )}
 
             <button
               type="button"
-              onClick={handleBrowserStart}
-              disabled={browserLoading}
+              onClick={handleBrowserOpen}
+              disabled={autoLoginLoading}
               className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-[13px] font-semibold text-white transition-all duration-150 active:scale-95 disabled:opacity-70"
               style={{
                 background: `linear-gradient(135deg, ${brandColor} 0%, ${brandColor}CC 100%)`,
                 boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
               }}
             >
-              {browserLoading && (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/35 border-t-white" />
-              )}
               {isExpired ? "Reconnect via browser" : "Connect via browser"}
             </button>
 
@@ -364,7 +390,6 @@ export function PlatformCard({
         {showForm && status !== "coming_soon" && (
           <form onSubmit={isPending ? handleRetry : handleSubmit} className="mt-4 space-y-3">
             <div className="h-px bg-[#F0EBE4]" />
-
             <div className="space-y-2.5">
               <input
                 type="email"
@@ -377,7 +402,6 @@ export function PlatformCard({
                   focus:border-[#1A1714] focus:outline-none focus:shadow-[0_0_0_3px_rgba(28,23,20,0.06)]
                   bg-[#FAFAF8] placeholder:text-[#C4BDB5] transition-all"
               />
-
               <input
                 type="password"
                 value={credPassword}
@@ -400,17 +424,14 @@ export function PlatformCard({
               <button
                 type="button"
                 onClick={() => { setShowForm(false); setErr(""); }}
-                className="flex-1 px-3 py-2.5 rounded-lg border border-[#E5DED6] text-[12px] font-semibold text-[#786F67]
-                  hover:bg-[#FAF6F1] transition-colors"
+                className="flex-1 px-3 py-2.5 rounded-lg border border-[#E5DED6] text-[12px] font-semibold text-[#786F67] hover:bg-[#FAF6F1] transition-colors"
               >
                 Cancel
               </button>
-
               <button
                 type="submit"
                 disabled={loading}
-                className="flex-1 px-3 py-2.5 rounded-lg text-[12px] font-semibold text-white
-                  disabled:opacity-50 active:scale-[0.98] transition-all"
+                className="flex-1 px-3 py-2.5 rounded-lg text-[12px] font-semibold text-white disabled:opacity-50 active:scale-[0.98] transition-all"
                 style={{ backgroundColor: brandColor }}
               >
                 {loading ? "Saving…" : isPending ? "Retry" : "Save"}
@@ -429,20 +450,14 @@ export function PlatformCard({
       <BrowserConnectModal
         open={browserModalOpen}
         platformName={name}
-        loginUrl={BROWSER_LOGIN_URLS[id] ?? LOGIN_FALLBACK_URL(id)}
-        loading={browserLoading}
-        error={browserError}
-        primaryLabel={browserPrimaryLabel}
-        statusText={browserStatusText}
-        onContinue={handleBrowserContinue}
+        platformId={id}
+        autoLoginLoading={autoLoginLoading}
+        autoLoginStatus={autoLoginStatus}
+        autoLoginMessage={autoLoginMessage}
+        onAutoLogin={handleAutoLogin}
+        onCookieImport={handleCookieImport}
         onCancel={handleBrowserCancel}
       />
     </>
   );
-}
-
-function LOGIN_FALLBACK_URL(platformId: string) {
-  return platformId === "indeed"
-    ? "https://secure.indeed.com/account/login"
-    : "https://www.linkedin.com/login";
 }

@@ -69,7 +69,7 @@ export default function OnboardingPage() {
     setList(list.includes(item) ? list.filter(x => x !== item) : [...list, item]);
   }
 
-  async function handleFileUpload(file: File) {
+  const handleFileUpload = useCallback(async (file: File) => {
     setCvFile(file);
     const token = localStorage.getItem("token") ?? "";
     const user = JSON.parse(localStorage.getItem("jobrocket_user") ?? "{}");
@@ -91,7 +91,7 @@ export default function OnboardingPage() {
         if (data.locations) setLocations(data.locations);
       }
     } catch { /* CV extraction is best-effort */ }
-  }
+  }, [name]);
 
   async function handleFinish() {
     setSaving(true);
@@ -143,7 +143,7 @@ export default function OnboardingPage() {
     if (file && (file.type === "application/pdf" || file.name.endsWith(".pdf"))) {
       handleFileUpload(file);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [handleFileUpload]);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">

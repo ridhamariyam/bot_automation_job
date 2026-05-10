@@ -44,12 +44,18 @@ export default function LoginPage() {
     e.preventDefault();
     setForgotLoading(true);
     try {
-      await fetch(`${API}/api/auth/forgot-password`, {
+      const res = await fetch(`${API}/api/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: forgotEmail }),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail ?? "Failed to send reset link");
+      }
       setForgotSent(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to send reset link");
     } finally {
       setForgotLoading(false);
     }

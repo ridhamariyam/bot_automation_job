@@ -176,15 +176,15 @@ function SettingsInner() {
     }
   }
 
-  async function handleBrowserConnectStart(platform: string) {
+  async function handleBrowserConnectStart(platform: string, email: string, password: string) {
     const res = await fetch(`${API}/api/bot/session/${platform}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ user_email: userEmail }),
+      body: JSON.stringify({ user_email: userEmail, email, password }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const msg = data.detail ?? data.error ?? "Could not open browser session";
+      const msg = data.detail ?? data.error ?? "Could not start login session";
       if (String(msg).toLowerCase().includes("session already in progress")) throw new Error("Connection already in progress…");
       throw new Error(msg);
     }
@@ -192,33 +192,20 @@ function SettingsInner() {
   }
 
   async function handleBrowserConnectComplete(platform: string, sessionId: string) {
-    const deadline = Date.now() + 60000;
-    let ready = false;
-    let lastMessage = "Not logged in yet";
-    while (Date.now() < deadline) {
-      const statusRes = await fetch(`${API}/api/bot/session/${platform}/status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ session_id: sessionId }),
-      });
-      const statusData = await statusRes.json().catch(() => ({}));
-      if (!statusRes.ok) throw new Error(statusData.detail ?? "Could not check login status");
-      ready = Boolean(statusData.ready);
-      lastMessage = statusData.message ?? lastMessage;
-      if (ready) break;
-      if (["expired", "closed"].some(k => String(lastMessage).toLowerCase().includes(k))) throw new Error(lastMessage);
-      await new Promise(r => window.setTimeout(r, 2000));
-    }
-    if (!ready) throw new Error("Not detected. Complete login fully, then click Retry.");
+    // Called by PlatformCard after SSE confirms authenticated — just close browser resources and persist state
     const res = await fetch(`${API}/api/bot/session/${platform}/complete`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ session_id: sessionId, user_email: userEmail }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail ?? "Could not save browser session");
-    if (!data.ok) throw new Error(data.message ?? lastMessage);
-    setCreds(prev => ({ ...prev, [platform]: { email: prev[platform]?.email || "", verifyStatus: "ok", connectedAt: new Date().toISOString() } }));
+    if (!res.ok) throw new Error(data.detail ?? "Could not finalize session");
+    if (!data.ok) throw new Error(data.message ?? "Session save failed");
+
+    setCreds(prev => ({
+      ...prev,
+      [platform]: { email: prev[platform]?.email || "", verifyStatus: "ok", connectedAt: new Date().toISOString() },
+    }));
     setVerifyPending(prev => { const c = { ...prev }; delete c[platform]; return c; });
     setSuccessToast(`${platformLabel(platform)} ready to use ✅`);
     setError("");
@@ -230,6 +217,24 @@ function SettingsInner() {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ session_id: sessionId }),
     }).catch(() => {});
+  }
+
+  async function handleCookieImport(platform: string, cookiesJson: string) {
+    const res = await fetch(`${API}/api/bot/session/${platform}/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ user_email: userEmail, cookies_json: cookiesJson }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail ?? data.error ?? "Import failed");
+    if (!data.ok) throw new Error(data.message ?? "Import failed — cookies may be invalid or expired");
+    setCreds(prev => ({
+      ...prev,
+      [platform]: { email: prev[platform]?.email || "", verifyStatus: "ok", connectedAt: new Date().toISOString() },
+    }));
+    setVerifyPending(prev => { const c = { ...prev }; delete c[platform]; return c; });
+    setSuccessToast(`${platformLabel(platform)} ready to use ✅`);
+    setError("");
   }
 
   async function saveProfile() {
@@ -411,6 +416,7 @@ function SettingsInner() {
                     onBrowserConnectStart={handleBrowserConnectStart}
                     onBrowserConnectComplete={handleBrowserConnectComplete}
                     onBrowserConnectCancel={handleBrowserConnectCancel}
+                    onCookieImport={handleCookieImport}
                   />
                 );
               })}

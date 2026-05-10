@@ -83,7 +83,9 @@ export default function DashboardPage() {
       }).then(r => r.ok ? r.json() : null),
       apiFetch<{ running: boolean }>(`/api/bot/status?email=${encodeURIComponent(u.email)}`),
     ]).then(([profile, botStatus]) => {
-      setCredentialsMissing(!profile?.linkedin_verified && !profile?.indeed_verified);
+      setCredentialsMissing(
+        !(profile?.linkedin_session_status === "ready" || profile?.indeed_session_status === "ready")
+      );
       setBotRunning(botStatus?.running ?? false);
       refreshData(u.email);
     }).catch(() => refreshData(u.email))
@@ -136,6 +138,8 @@ export default function DashboardPage() {
 
   const recentJobs = jobs.slice(0, 8);
   const interviewCount = stats.by_status["Interview"] ?? 0;
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const thisWeekCount = jobs.filter(j => new Date(j.applied_at).getTime() >= oneWeekAgo).length;
 
   return (
     <DashboardLayout
@@ -171,7 +175,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-6">
         <StatCard label="Total Applied" value={stats.total} icon={Briefcase} />
         <StatCard label="Interviews" value={interviewCount} icon={TrendingUp} />
-        <StatCard label="This Week" value={stats.by_status["Applied"] ?? 0} icon={Bot} trend="applications" />
+        <StatCard label="This Week" value={thisWeekCount} icon={Bot} trend="applications" />
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">

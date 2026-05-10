@@ -129,11 +129,9 @@ def download_tailored_resume(job_id: str):
                 base_resume = db.query(Resume).filter_by(
                     user_email=job.user_email
                 ).order_by(Resume.created_at.desc()).first()
-
-        if not base_resume:
-            raise HTTPException(404, "No base resume found for this user")
-
-        resume_data = _serialize_resume(base_resume)
+            if not base_resume:
+                raise HTTPException(404, "No base resume found for this user")
+            resume_data = _serialize_resume(base_resume)
 
         # Merge AI-tailored fields
         if tailored_data.get("professional_summary"):

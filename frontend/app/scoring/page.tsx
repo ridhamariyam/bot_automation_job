@@ -70,11 +70,13 @@ export default function ScoringPage() {
       apiFetch<{ running: boolean }>(`/api/bot/status?email=${encodeURIComponent(u.email)}`),
       fetch(`${API}/api/profile/${encodeURIComponent(u.email)}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-      }).then(r => r.ok ? r.json() : null),
+      }).then(r => r.ok ? r.json().catch(() => null) : null),
     ]).then(([cfg, status, profile]) => {
       if (cfg) setConfig(cfg);
       setBotRunning(status?.running ?? false);
-      setCredentialsMissing(!profile?.linkedin_verified && !profile?.indeed_verified);
+      setCredentialsMissing(
+        !(profile?.linkedin_session_status === "ready" || profile?.indeed_session_status === "ready")
+      );
     }).catch(() => {});
 
     refresh(u.email);

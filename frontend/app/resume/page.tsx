@@ -95,6 +95,7 @@ export default function ResumePage() {
       const r = await fetch(`${API}/api/resume/${encodeURIComponent(e)}`, {
         headers: { Authorization: `Bearer ${t}` },
       });
+      if (!r.ok) return;
       const data = await r.json();
       setList(Array.isArray(data) ? data : []);
     } catch {}
@@ -103,6 +104,7 @@ export default function ResumePage() {
   const loadResume = async (id: string) => {
     try {
       const r = await fetch(`${API}/api/resume/${encodeURIComponent(email)}/${id}`, { headers: headers() });
+      if (!r.ok) throw new Error("Failed to load resume");
       const data = await r.json();
       setResume(data);
       setActiveId(id);
@@ -141,7 +143,6 @@ export default function ResumePage() {
   const downloadFile = async (type: "pdf" | "excel") => {
     if (!activeId) { flash("Save the resume first", false); return; }
     const ext  = type === "pdf" ? "pdf" : "xlsx";
-    const mime = type === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     const url  = `${API}/api/resume/${encodeURIComponent(email)}/${activeId}/${type}`;
     const r    = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) { flash("Download failed", false); return; }
@@ -149,7 +150,6 @@ export default function ResumePage() {
     const a    = document.createElement("a");
     a.href     = URL.createObjectURL(blob);
     a.download = `resume.${ext}`;
-    void mime;
     a.click();
   };
 

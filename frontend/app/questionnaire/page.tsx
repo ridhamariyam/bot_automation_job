@@ -87,6 +87,7 @@ export default function QuestionnairePage() {
     if (!form.cvFile) { setError("Please upload your CV."); return; }
     setLoading(true); setError("");
     try {
+      const token = localStorage.getItem("token") ?? "";
       const body = new FormData();
       Object.entries(form).forEach(([k, v]) => {
         if (k === "cvFile" || v == null) return;
@@ -95,7 +96,11 @@ export default function QuestionnairePage() {
         else body.append(k, v as string);
       });
       body.append("cv", form.cvFile);
-      const res = await fetch(`${API}/api/profile`, { method: "POST", body });
+      const res = await fetch(`${API}/api/profile`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body,
+      });
       if (!res.ok) throw new Error();
       const data = await res.json();
       localStorage.setItem("jobrocket_user", JSON.stringify(data));
