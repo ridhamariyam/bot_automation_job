@@ -273,47 +273,43 @@ async def _validate_captured_session(session: BrowserLoginSession, storage_state
 
 
 async def _validate_saved_platform_session(user_email: str, platform: str) -> Optional[bool]:
-    from bot.browser.session_manager import (
-        get_storage_state,
-        invalidate_session,
-        validate_authenticated_session,
-    )
+    """
+    Lightweight pre-flight check — cookie presence + expiry only.
+
+    Playwright-based navigation is NOT used here because LinkedIn/Indeed block
+    Render datacenter IPs at the network level, causing false negatives that
+    would invalidate perfectly good sessions and prevent the bot from starting.
+    The bot worker itself handles expired sessions gracefully at runtime.
+    """
+    import time as _time
+    from bot.browser.session_manager import get_storage_state, invalidate_session
 
     storage_state = get_storage_state(user_email, platform)
     if not storage_state:
-        return True
+        return True  # No session stored — bot runs without session auth
 
-    playwright: Optional[Playwright] = None
-    browser: Optional[Browser] = None
-    context: Optional[BrowserContext] = None
+    required = _REQUIRED_AUTH_COOKIES.get(platform, set())
+    if not required:
+        return True  # Platform doesn't use a required auth cookie
 
-    try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True, args=CHROMIUM_ARGS)
-        context = await _new_capture_context(browser, storage_state=storage_state)
-        is_valid = await validate_authenticated_session(context, platform)
-        if not is_valid:
-            invalidate_session(user_email, platform)
-        return is_valid
-    except Exception as exc:
-        logger.warning("Saved session preflight failed for %s/%s: %s", user_email, platform, exc)
-        return None
-    finally:
-        if context:
-            try:
-                await context.close()
-            except Exception:
-                pass
-        if browser:
-            try:
-                await browser.close()
-            except Exception:
-                pass
-        if playwright:
-            try:
-                await playwright.stop()
-            except Exception:
-                pass
+    cookies = storage_state.get("cookies") or []
+    auth_cookie = next(
+        (c for c in cookies if isinstance(c, dict) and c.get("name", "").lower() in required),
+        None,
+    )
+    if not auth_cookie:
+        logger.info("Session preflight %s/%s: auth cookie missing — invalidating", user_email, platform)
+        invalidate_session(user_email, platform)
+        return False
+
+    expires = auth_cookie.get("expires") or auth_cookie.get("expirationDate") or 0
+    if expires and isinstance(expires, (int, float)) and expires > 0 and expires < _time.time():
+        logger.info("Session preflight %s/%s: auth cookie expired — invalidating", user_email, platform)
+        invalidate_session(user_email, platform)
+        return False
+
+    logger.info("Session preflight %s/%s: OK", user_email, platform)
+    return True
 
 
 async def _auto_login_browser(session: BrowserLoginSession, email: str, password: str) -> None:
