@@ -26,7 +26,6 @@ from database import (
 )
 from services.crypto import decrypt_password
 from services.whatsapp import TwilioWhatsAppSender, process_recruiter_contact
-from bot.browser.pool import browser_pool
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +40,9 @@ async def run_bot_task(
 ):
     """
     Main ARQ task — called by the worker for each (user, platform) pair.
-    ctx['pool'] and ctx['db'] are injected by startup().
+    Creates and tears down its own BrowserPool per task to keep memory low.
     """
-    pool = ctx["pool"]
+    from bot.browser.pool import BrowserPool
     task_id = ctx.get("job_id", str(uuid.uuid4()))
     logger.info("Task start: user=%s platform=%s max_jobs=%d", user_email, platform, max_jobs)
 
@@ -113,24 +112,30 @@ async def run_bot_task(
         _log(f"Platform adapter not available for {platform}: {e}", "warn")
         return {"error": f"Adapter not found: {platform}"}
 
-    # Run automation inside a pooled browser context
+    # Run automation inside a per-task browser pool (start fresh, shut down after)
+    # This keeps peak memory low on constrained hosts (Render free plan).
     results = []
-    async with pool.acquire(storage_state=storage_state) as ctx_browser:
-        from bot.platforms.base import PlatformConfig
-        adapter_config = PlatformConfig(
-            platform_id       = platform,
-            email             = config["email"],
-            password          = config["password"],
-            target_titles     = config["target_titles"],
-            target_locations  = config["target_locations"],
-            max_applications  = config["max_applications"],
-            cv_path           = config["cv_path"] or None,
-            phone             = config["phone"] or None,
-            skills            = config["skills"] or None,
-        )
-        setattr(adapter_config, "_user_email", user_email)
-        adapter  = adapter_class(adapter_config, ctx_browser)
-        results  = await adapter.run()
+    pool = BrowserPool(pool_size=1)
+    await pool.start()
+    try:
+        async with pool.acquire(storage_state=storage_state) as ctx_browser:
+            from bot.platforms.base import PlatformConfig
+            adapter_config = PlatformConfig(
+                platform_id       = platform,
+                email             = config["email"],
+                password          = config["password"],
+                target_titles     = config["target_titles"],
+                target_locations  = config["target_locations"],
+                max_applications  = config["max_applications"],
+                cv_path           = config["cv_path"] or None,
+                phone             = config["phone"] or None,
+                skills            = config["skills"] or None,
+            )
+            setattr(adapter_config, "_user_email", user_email)
+            adapter  = adapter_class(adapter_config, ctx_browser)
+            results  = await adapter.run()
+    finally:
+        await pool.shutdown()
 
     # Persist applied jobs
     saved = 0
@@ -298,15 +303,12 @@ async def _enrich_with_ai(user_email: str, applied_jobs, config: dict):
 
 async def startup(ctx):
     """Called once when the worker process starts."""
-    await browser_pool.start()
-    ctx["pool"] = browser_pool
-    logger.info("Worker started — BrowserPool ready (size=%d)", browser_pool._size)
+    logger.info("Worker started — browser pool is per-task (lazy)")
 
 
 async def shutdown(ctx):
     """Called once when the worker process stops."""
-    await browser_pool.shutdown()
-    logger.info("Worker shutdown — BrowserPool closed")
+    logger.info("Worker shutdown")
 
 
 # ── ARQ WorkerSettings ─────────────────────────────────────────────────────────
@@ -341,7 +343,7 @@ class WorkerSettings:
     functions      = [run_bot_task]
     on_startup     = startup
     on_shutdown    = shutdown
-    max_jobs       = 10        # concurrent tasks per worker process
+    max_jobs       = 3         # concurrent tasks per worker process (each spawns Chromium)
     job_timeout    = 3600      # 1 hour max per task
     keep_result    = 86400     # store results 24 hours
     retry_jobs     = False     # don't auto-retry failed bot runs
