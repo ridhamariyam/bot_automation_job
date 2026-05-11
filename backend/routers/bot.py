@@ -692,11 +692,12 @@ async def _enqueue_arq(user_email: str, platforms: list[str], max_jobs: int) -> 
         from arq.connections import create_pool, RedisSettings
         from urllib.parse import urlparse as _urlparse
 
-        # Parse Redis URL — handles redis:// and rediss:// (TLS) with any auth format
+        # Parse Redis URL — handles redis:// and rediss:// (TLS) with optional user:pass@host
         _p = _urlparse(REDIS_URL or "")
         settings = RedisSettings(
             host     = _p.hostname or "localhost",
             port     = _p.port or 6379,
+            username = _p.username or None,   # Render uses ACL: AUTH default <password>
             password = _p.password or None,
             ssl      = (_p.scheme == "rediss"),
         )
@@ -772,6 +773,7 @@ async def stop_bot(email: str):
             redis = await create_pool(RedisSettings(
                 host     = _p2.hostname or "localhost",
                 port     = _p2.port or 6379,
+                username = _p2.username or None,
                 password = _p2.password or None,
                 ssl      = (_p2.scheme == "rediss"),
             ))

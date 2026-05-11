@@ -324,6 +324,7 @@ def _redis_settings():
         return RedisSettings(
             host     = p.hostname or "localhost",
             port     = p.port or 6379,
+            username = p.username or None,   # Render uses ACL: AUTH default <password>
             password = p.password or None,
             ssl      = use_tls,
         )
